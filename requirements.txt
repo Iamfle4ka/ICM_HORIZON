@@ -1,0 +1,7 @@
+streamlit>=1.35
+langgraph>=0.2
+anthropic>=0.25
+pyyaml>=6.0
+
+# Databricks — odkomentuj pro production
+# databricks-sql-connector>=3.0.0

@@ -374,12 +374,13 @@ def _short_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:6].upper()
 
 
-def _mock_memo(client: dict, metrics: dict) -> str:
-    """Generuje mock Credit Memo s [CITATION:] tagy."""
+def _mock_memo(client: dict, metrics: dict | None = None) -> str:
+    """Generuje mock Credit Memo s [CITATION:] tagy. ESG NENÍ součástí Credit Memo."""
+    if metrics is None:
+        metrics = _compute_metrics(client)
     name = client["company_name"]
     ico = client["ico"]
     rating = client.get("cribis_rating", "N/A")
-    esg = client.get("esg_score", "N/A")
     limit_m = client["credit_limit"] / 1_000_000
     util_m = client["current_utilisation"] / 1_000_000
     revenue_m = client["financial_data"]["revenue"] / 1_000_000
@@ -436,17 +437,7 @@ Doporučení: {"Schválit s monitoringem" if ew == "GREEN" else "Podmínečně s
 - EBITDA: **{ebitda_m:.0f} M CZK** [CITATION:{src1}]
 - EBITDA marže: **{(client['financial_data']['ebitda']/client['financial_data']['revenue']*100):.1f} %** [CITATION:{src1}]
 
-## 4. ESG profil
-
-ESG skóre: **{esg}** [CITATION:{"esg_report" if "esg_report" in sources else src2}]
-
-{
-"ESG profil je v souladu s bankovními standardy udržitelného financování."
-if isinstance(esg, float) and esg >= 60
-else "ESG profil vykazuje oblasti vyžadující zlepšení — doporučujeme ESG akční plán."
-}
-
-## 5. Doporučení
+## 4. Doporučení
 
 Na základě dostupných dat a předem vypočtených metrik [CITATION:{src1}] doporučujeme:
 
@@ -558,6 +549,102 @@ def _mock_audit_trail(
             "metadata":       {"ew_alert_level": client["ew_alert_level"]},
         },
     ]
+
+
+# DETERMINISTIC
+def _mock_transactions_12m(ico: str) -> list[dict]:
+    """Generuje 12 měsíců mock transakčních dat pro demo mode."""
+    import random
+    from datetime import timedelta
+
+    client = get_client(ico)
+    is_red = client and client.get("ew_alert_level") == "RED"
+    base_turnover = (
+        client["financial_data"]["revenue"] / 12
+        if client
+        else 8_500_000.0
+    )
+    trend = 0.98 if is_red else 1.01
+    months = []
+    now = datetime.now(timezone.utc)
+    for i in range(12):
+        month = (now - timedelta(days=30 * i)).strftime("%Y-%m")
+        turnover = base_turnover * (trend ** i) * random.uniform(0.92, 1.08)
+        months.append({
+            "year_month":       month,
+            "credit_turnover":  round(turnover, 0),
+            "debit_turnover":   round(turnover * 0.85, 0),
+            "min_balance":      round(turnover * 0.05, 0),
+            "avg_balance":      round(turnover * 0.12, 0),
+            "overdraft_days":   0 if not is_red else random.randint(0, 8),
+            "overdraft_depth":  0,
+            "tax_payment_made": "true",
+            "tax_delay_days":   0,
+            "payroll_amount":   round(turnover * 0.18, 0),
+            "payroll_employees": 45,
+            "deposit_balance":  round(turnover * 0.08, 0),
+            "savings_balance":  round(turnover * 0.03, 0),
+        })
+    return months
+
+
+def _mock_cribis(ico: str) -> dict | None:
+    """Mock CRIBIS data pro demo mode — silver_data_cribis_v3."""
+    client = get_client(ico)
+    if not client:
+        return None
+
+    fd = client.get("financial_data", {})
+    ebitda    = float(fd.get("ebitda", 0) or 0)
+    revenue   = float(fd.get("revenue", 0) or 0)
+    net_debt  = float(fd.get("net_debt", 0) or 0)
+    curr_assets = float(fd.get("current_assets", 0) or 0)
+    curr_liab   = float(fd.get("current_liabilities", 0) or 0)
+    debt_service = float(fd.get("debt_service", 0) or 0)
+    op_cf       = float(fd.get("operating_cashflow", 0) or 0)
+
+    # Aproximace bankovních závazků z net_debt
+    bank_lt = round(net_debt * 0.65 + ebitda * 0.1, 0) if net_debt else 0
+    bank_st = round(net_debt * 0.35 - ebitda * 0.1, 0) if net_debt else 0
+    cash    = round(bank_st + bank_lt - net_debt, 0)
+    interest_exp = round(net_debt * 0.045, 0) if net_debt else 0
+
+    # Výpočty WCR
+    leverage_ratio = round(net_debt / ebitda, 3) if ebitda else None
+    dscr_proxy = round(ebitda / (interest_exp + bank_st / 12), 3) if interest_exp else None
+    current_ratio = round(curr_assets / curr_liab, 2) if curr_liab else None
+
+    ew = client.get("ew_alert_level", "GREEN")
+
+    return {
+        "ic":                    ico,
+        "nazev_subjektu":        client.get("company_name", ""),
+        "revenue":               revenue,
+        "ebitda":                ebitda,
+        "ebit":                  round(ebitda * 0.85, 0),
+        "net_income":            round(ebitda * 0.55, 0),
+        "current_ratio":         current_ratio,
+        "roa":                   round(ebitda / float(fd.get("total_assets", 1) or 1) * 100, 1),
+        "roe":                   round(ebitda * 0.55 / (float(fd.get("total_assets", 1)) * 0.4) * 100, 1),
+        "ros":                   round(ebitda / revenue * 100, 1) if revenue else None,
+        "total_leverage_pct":    round(net_debt / float(fd.get("total_assets", 1) or 1) * 100, 1),
+        "bank_liabilities_st":   bank_st,
+        "bank_liabilities_lt":   bank_lt,
+        "cash":                  cash,
+        "interest_expense":      interest_exp,
+        "total_assets":          fd.get("total_assets"),
+        "current_assets":        curr_assets,
+        "net_debt":              net_debt,
+        "leverage_ratio":        leverage_ratio,
+        "dscr":                  dscr_proxy,
+        "dscr_note":             "Proxy: EBITDA/debt_service" if dscr_proxy else None,
+        "net_working_capital_k": round((curr_assets - curr_liab) / 1000, 0),
+        "yoy_revenue_change_pct": -5.0 if ew == "RED" else 3.5,
+        "yoy_ebitda_change_pct":  -8.0 if ew == "RED" else 2.0,
+        "is_suspicious":         False,
+        "missing_key_kpi":       False,
+        "periods_count":         4,
+    }
 
 
 if __name__ == "__main__":

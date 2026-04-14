@@ -28,6 +28,24 @@ API_RETRY_COUNT       = 3
 API_RETRY_DELAY_SEC   = 30
 MAX_SUBAGENTS         = 10     # Guard pro případný budoucí spawning
 
+# ── Early Warning System prahy ─────────────────────────────────────────────────
+
+EW_THRESHOLDS: dict[str, float] = {
+    "utilisation_red_pct":    85.0,   # Využití ≥ 85 % → RED
+    "utilisation_amber_pct":  75.0,   # Využití ≥ 75 % → AMBER
+    "utilisation_trend_30d":  15.0,   # Nárůst > 15 pp za 30 dní → AMBER
+    "dpd_red_days":           30.0,   # DPD ≥ 30 dní → RED
+    "dpd_amber_days":         15.0,   # DPD ≥ 15 dní → AMBER
+    "revenue_drop_red_pct":   20.0,   # Pokles obratu > 20 % MoM → RED
+    "revenue_drop_amber_pct": 10.0,   # Pokles obratu > 10 % MoM → AMBER
+    "days_to_breach_amber":   60.0,   # < 60 dní do breach → AMBER
+    "overdraft_red_pct":      50.0,   # ≥ 50 % dní v přečerpání (3M) → RED
+    "overdraft_amber_pct":    20.0,   # ≥ 20 % dní v přečerpání (3M) → AMBER
+    "tax_compliance_amber":   67.0,   # Tax compliance < 67 % → AMBER
+    "covenant_risk_red":       0.7,   # Composite ≥ 0.7 → RED
+    "covenant_risk_amber":     0.5,   # Composite ≥ 0.5 → AMBER
+}
+
 # ── Popis pravidel (pro UI) ───────────────────────────────────────────────────
 
 WCR_RULE_DESCRIPTIONS: dict[str, str] = {

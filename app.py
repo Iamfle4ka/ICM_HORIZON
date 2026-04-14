@@ -39,6 +39,8 @@ from ui.page_portfolio import render_portfolio_page
 from ui.page_credit_memo import render_credit_memo_page
 from ui.page_human_review import render_human_review_page
 from ui.page_audit_trail import render_audit_trail_page
+from ui.page_early_warning import render_early_warning_page
+from ui.page_settings import render_settings_page
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
@@ -64,10 +66,12 @@ def render_sidebar() -> str:
         st.markdown("### Navigace")
 
         pages = {
-            "portfolio":    "📊 Portfolio Dashboard",
-            "credit_memo":  "📄 Credit Memo",
-            "human_review": "👁️ Human Review",
-            "audit_trail":  "🔍 Audit Trail",
+            "portfolio":      "📊 Portfolio Dashboard",
+            "credit_memo":    "📄 Credit Memo",
+            "human_review":   "👁️ Human Review",
+            "audit_trail":    "🔍 Audit Trail",
+            "early_warning":  "⚠️ Early Warning",
+            "settings":       "⚙️ Nastavení",
         }
 
         # Výchozí stránka
@@ -129,6 +133,10 @@ def main() -> None:
         render_human_review_page()
     elif page == "audit_trail":
         render_audit_trail_page()
+    elif page == "early_warning":
+        render_early_warning_page()
+    elif page == "settings":
+        render_settings_page()
     else:
         st.error(f"Neznámá stránka: {page}")
 

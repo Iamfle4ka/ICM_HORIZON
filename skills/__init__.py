@@ -122,6 +122,10 @@ class SkillsRegistry:
                 log.warning(f"[SkillsRegistry] Nelze načíst skill {name}: {e}")
         return skills
 
+    def list_skills(self) -> list[dict]:
+        """Alias pro get_all_skills() — kompatibilita s CONTINUATION_PROMPT."""
+        return self.get_all_skills()
+
     def clear_cache(self) -> None:
         """Vyčistí cache (pro testování)."""
         self._cache.clear()
@@ -142,8 +146,8 @@ if __name__ == "__main__":
 
     # Test get
     maker = reg.get("maker_skill")
-    assert maker["name"] == "memo_preparation"
-    assert maker["version"] == "3.1"
+    assert maker["name"] == "maker_skill"
+    assert maker["version"] == "3.2"
     assert len(reg.get_prompt_hash("maker_skill")) == 12
 
     print("OK — skills/__init__.py smoke test passed")

@@ -26,8 +26,6 @@ from utils.wcr_rules import (
     API_RETRY_DELAY_SEC,
     MAX_MAKER_ITERATIONS,
     MIN_CITATION_COVERAGE,
-    build_wcr_report,
-    check_wcr_breaches,
 )
 
 log = logging.getLogger(__name__)
@@ -111,11 +109,15 @@ def memo_preparation_agent(state: dict) -> dict:
         f"DATA_SOURCES (povolené source_id pro citace):\n"
         + "\n".join(f"- {k}: {v}" for k, v in data_sources.items())
         + f"\n\nDOPLŇUJÍCÍ DATA:\n"
-        f"- CRIBIS Rating: {case_view.get('cribis_rating', 'N/A')}\n"
-        f"- ESG Score: {case_view.get('esg_score', 'N/A')}\n"
-        f"- Flood Risk: {case_view.get('flood_risk', 'N/A')}\n"
         f"- Limit: {_fmt_m(case_view.get('credit_limit'))} M CZK\n"
         f"- Čerpání: {_fmt_m(case_view.get('current_utilisation'))} M CZK\n"
+        f"- Covenant: {metrics.get('covenant_status', case_view.get('covenant_status', 'N/A'))}\n"
+        f"- CMP monitoring: {metrics.get('cmp_monitored', False)}\n"
+        f"- Restrukturalizace: {metrics.get('is_restructured', False)}\n"
+        f"- Délka vztahu: {metrics.get('relationship_years', 'N/A')} let\n"
+        f"- Průměrný obrat: {_fmt_m(case_view.get('silver_metrics', {}).get('avg_monthly_credit_turnover'))} M CZK/měsíc\n"
+        f"- Internal rating: {metrics.get('internal_rating', 'N/A')}\n"
+        f"- wcr_partial: {metrics.get('wcr_partial', False)} (True = Leverage/DSCR/Current Ratio chybí)\n"
         + re_iter_section
     )
 
@@ -366,24 +368,81 @@ def policy_rules_engine(state: dict) -> dict:
         )
         return {**state, "audit_trail": audit}
 
-    # DETERMINISTIC — volání WCR rules engine
-    breaches = check_wcr_breaches(
-        leverage_ratio=metrics.get("leverage_ratio", 0.0),
-        dscr=metrics.get("dscr", 0.0),
-        utilisation_pct=metrics.get("utilisation_pct", 0.0),
-        current_ratio=metrics.get("current_ratio", 0.0),
-        dpd_current=int(metrics.get("dpd_current", 0)),
-    )
+    # DETERMINISTIC — partial WCR (uses pre-computed results from CreditAnalysisService)
+    # metrics.wcr_breaches already handles None correctly (from phase2)
+    breaches = list(metrics.get("wcr_breaches", []))
+    wcr_skipped = list(metrics.get("wcr_skipped", []))
+    wcr_partial = bool(metrics.get("wcr_partial", False))
 
-    wcr_report = build_wcr_report(
-        leverage_ratio=metrics.get("leverage_ratio", 0.0),
-        dscr=metrics.get("dscr", 0.0),
-        utilisation_pct=metrics.get("utilisation_pct", 0.0),
-        current_ratio=metrics.get("current_ratio", 0.0),
-        dpd_current=int(metrics.get("dpd_current", 0)),
-        breaches=breaches,
+    utilisation_pct = float(
+        metrics.get("credit_limit_utilization_pct")
+        or metrics.get("utilisation_pct")
+        or 0.0
     )
+    dpd_current    = int(metrics.get("dpd_current", 0))
+    leverage_ratio = metrics.get("leverage_ratio")   # None = wyžaduje CRIBIS
+    dscr           = metrics.get("dscr")             # None = vyžaduje CRIBIS
+    current_ratio  = metrics.get("current_ratio")    # None = vyžaduje CRIBIS
 
+    from datetime import datetime, timezone
+    from utils.wcr_rules import WCR_LIMITS
+    checked = 2 + (3 - len(wcr_skipped))
+    completeness = f"{checked}/5 pravidel zkontrolováno"
+
+    rules_detail = {
+        "utilisation": {
+            "value": round(utilisation_pct, 1),
+            "limit": WCR_LIMITS["max_utilisation_pct"],
+            "passed": utilisation_pct <= WCR_LIMITS["max_utilisation_pct"],
+            "source": "credit_history", "unit": "%", "skipped": False,
+        },
+        "dpd": {
+            "value": dpd_current,
+            "limit": WCR_LIMITS["max_dpd_days"],
+            "passed": dpd_current <= WCR_LIMITS["max_dpd_days"],
+            "source": "credit_history", "unit": " dní", "skipped": False,
+        },
+        "leverage": (
+            {"value": leverage_ratio, "limit": WCR_LIMITS["max_leverage_ratio"],
+             "passed": leverage_ratio <= WCR_LIMITS["max_leverage_ratio"],
+             "source": "cribis_external", "unit": "x", "skipped": False}
+            if leverage_ratio is not None else
+            {"value": None, "limit": WCR_LIMITS["max_leverage_ratio"],
+             "passed": None, "note": "Vyžaduje CRIBIS", "skipped": True, "unit": "x"}
+        ),
+        "dscr": (
+            {"value": dscr, "limit": WCR_LIMITS["min_dscr"],
+             "passed": dscr >= WCR_LIMITS["min_dscr"],
+             "source": "cribis_external", "unit": "", "skipped": False}
+            if dscr is not None else
+            {"value": None, "limit": WCR_LIMITS["min_dscr"],
+             "passed": None, "note": "Vyžaduje CRIBIS", "skipped": True, "unit": ""}
+        ),
+        "current_ratio": (
+            {"value": current_ratio, "limit": WCR_LIMITS["min_current_ratio"],
+             "passed": current_ratio >= WCR_LIMITS["min_current_ratio"],
+             "source": "cribis_external", "unit": "", "skipped": False}
+            if current_ratio is not None else
+            {"value": None, "limit": WCR_LIMITS["min_current_ratio"],
+             "passed": None, "note": "Vyžaduje CRIBIS", "skipped": True, "unit": ""}
+        ),
+    }
+    passed_rules = sum(1 for r in rules_detail.values() if r.get("passed") is True)
+    failed_rules = sum(1 for r in rules_detail.values() if r.get("passed") is False)
+
+    wcr_report = {
+        "rules":            list(rules_detail.values()),
+        "rules_detail":     rules_detail,
+        "total_rules":      5,
+        "passed_rules":     passed_rules,
+        "failed_rules":     failed_rules,
+        "breaches":         breaches,
+        "skipped_rules":    wcr_skipped,
+        "overall_passed":   len(breaches) == 0,
+        "wcr_partial":      wcr_partial,
+        "data_completeness": completeness,
+        "checked_at":       datetime.now(timezone.utc).isoformat(),
+    }
     wcr_passed = not breaches
     log.info(
         f"[PolicyRulesEngine] WCR check hotov | ico={ico} "
