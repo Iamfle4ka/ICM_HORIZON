@@ -141,7 +141,7 @@ def record_human_decision(state: dict, decision: str, comments: str = "") -> dic
         },
     )
 
-    return {
+    new_state = {
         **state,
         "human_decision":   decision,
         "human_comments":   comments,
@@ -149,6 +149,15 @@ def record_human_decision(state: dict, decision: str, comments: str = "") -> dic
         "status":           new_status,
         "audit_trail":      audit,
     }
+
+    # ── GDPR: Transient Session cleanup po schválení ────────────────────────
+    # Citlivá klientská data jsou odstraněna ze state po finálním rozhodnutí.
+    # Audit trail zůstává — neobsahuje raw finanční data, pouze hashe a metadata.
+    if new_status in (ProcessStatus.COMPLETED, ProcessStatus.FAILED):
+        new_state = _sanitize_transient_data(new_state)
+        log.info(f"[HumanReview] GDPR: Transient data sanitized | ico={ico} status={new_status}")
+
+    return new_state
 
 
 # ── Privátní helpers ───────────────────────────────────────────────────────────
@@ -169,6 +178,41 @@ def _derive_ew_level(state: dict) -> str:
     if breaches >= 1 or dpd > 0:
         return "AMBER"
     return "GREEN"
+
+
+def _sanitize_transient_data(state: dict) -> dict:
+    """
+    GDPR: Odstraní citlivá klientská data ze state po finálním rozhodnutí.
+
+    Co se odstraní (transient):
+    - extraction_result   — raw dokumenty a surová data
+    - case_view           — kompletní finanční profil
+    - draft_memo          — text Credit Mema (uložen externě v Helios/SharePoint)
+    - financial_metrics   — detailní metriky (zachováno pouze wcr_breaches pro audit)
+
+    Co zůstane (audit trail):
+    - audit_trail         — hashe, tokeny, metadata
+    - human_decision      — výsledek
+    - human_comments      — komentář underwritera
+    - status              — finální status
+    - ico, request_id     — identifikátory
+    """
+    sanitized = dict(state)
+    sanitized["extraction_result"]  = None   # raw dokumenty smazány
+    sanitized["case_view"]          = None   # finanční profil smazán
+    sanitized["draft_memo"]         = None   # memo smazáno (uloženo externě)
+    # Z financial_metrics zachovej pouze WCR summary (ne raw hodnoty)
+    fm = state.get("financial_metrics", {})
+    sanitized["financial_metrics"] = {
+        "wcr_breaches": fm.get("wcr_breaches", []),
+        "wcr_partial":  fm.get("wcr_partial"),
+        "dpd_current":  fm.get("dpd_current"),
+        "_sanitized":   True,
+    }
+    sanitized["_gdpr_sanitized_at"] = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).isoformat()
+    return sanitized
 
 
 def _compute_diff(original_memo: str, comments: str) -> str:

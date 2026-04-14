@@ -64,23 +64,21 @@ def _ai_comment(record: dict) -> tuple[str, list[str]]:
     """AI komentář pro ESG záznam (pro Tým 5, ne Credit Memo)."""
     import json
 
-    import anthropic
-
     from skills import registry
+    from utils.llm_factory import get_llm
 
-    skill = registry.get("esg_transformer_skill")
-    api_client = anthropic.Anthropic()
+    skill      = registry.get("esg_transformer_skill")
+    api_client = get_llm()
     ctx = (
         f"Firma: {record['company_name']} (IČO: {record['ico']})\n"
         f"ESG skóre: {record['esg_score_normalized']}\n"
         f"Flood risk: {record['flood_risk_category']}\n"
         f"Risk summary: {record['esg_risk_summary']}"
     )
-    response = api_client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=256,
+    response = api_client.complete(
         system=skill["prompt"],
-        messages=[{"role": "user", "content": ctx}],
+        user_message=ctx,
+        max_tokens=256,
     )
-    result = json.loads(response.content[0].text)
+    result = json.loads(response.text)
     return result.get("esg_comment", ""), result.get("key_factors", [])

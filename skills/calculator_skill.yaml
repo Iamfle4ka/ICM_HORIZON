@@ -1,0 +1,144 @@
+name: calculator_skill
+version: "4.0"
+node_type: DETERMINISTIC
+prompt: "# DETERMINISTIC — Formula library. No LLM call. See utils/calculator.py."
+description: |
+  Knihovna finančních vzorců pro deterministický výpočet úvěrových metrik.
+  NEPODPORUJE LLM — čistý Python engine v utils/calculator.py.
+  Všechny vzorce jsou auditovatelné a reprodukovatelné.
+
+# ── Datové zdroje ────────────────────────────────────────────────────────────
+data_sources:
+  primary: "CRIBIS — silver_data_cribis_v3"
+  secondary: "Justice.cz PDF (výroční zpráva)"
+  tertiary: "ARES API (základní údaje)"
+  fallback: "Process Freeze — žádná data nedostupná"
+
+# ── Vzorce (dokumentace) ─────────────────────────────────────────────────────
+formulas:
+
+  leverage_ratio:
+    label: "Leverage Ratio (Net Debt / EBITDA)"
+    formula: "(bank_liabilities_st + bank_liabilities_lt - cash) / ebitda"
+    wcr_limit: "≤ 5.0x"
+    unit: "x"
+    cribis_columns:
+      - "zavazky_k_uverovym_institucim"        # bank_liabilities_st
+      - "zavazky_k_uverovym_institucim_1"      # bank_liabilities_lt
+      - "penezni_prostredky"                   # cash
+      - "ebitda"
+
+  dscr:
+    label: "DSCR (Debt Service Coverage Ratio)"
+    formula: "(ebitda - capex - dan_z_prijmu) / (interest_expense + bank_liabilities_st / 12)"
+    wcr_limit: "≥ 1.2"
+    unit: ""
+    notes:
+      - "CAPEX = max(0, stala_aktiva_curr - stala_aktiva_prev) + odpisy"
+      - "Pokud prev_period chybí: CAPEX_proxy = odpisy (konzervativnější)"
+      - "dan_z_prijmu = dan_z_prijmu_1 (splatná daň z příjmu)"
+    cribis_columns:
+      - "ebitda"
+      - "odpisy"                               # depreciation & amortization
+      - "stala_aktiva"                         # fixed assets (current period)
+      - "dan_z_prijmu_1"                       # income tax paid
+      - "nakladove_uroky_a_podobne_naklady"    # interest_expense
+      - "zavazky_k_uverovym_institucim"        # bank_liabilities_st
+
+  current_ratio:
+    label: "Current Ratio (Oběžná aktiva / Krátkodobé závazky)"
+    formula: "obezna_aktiva / (cizi_zdroje - bank_liabilities_lt)"
+    wcr_limit: "≥ 1.2"
+    unit: ""
+    notes:
+      - "Přímo dostupné z CRIBIS: likvidita_bezna"
+    cribis_columns:
+      - "likvidita_bezna"                      # current_ratio (přímý)
+      - "obezna_aktiva"                        # current_assets
+      - "cizi_zdroje"                          # total_debt (fallback)
+
+  quick_ratio:
+    label: "Quick Ratio (Pohotová likvidita)"
+    formula: "(obezna_aktiva - zasoby) / current_liabilities"
+    warning_limit: "< 1.0"
+    unit: ""
+    cribis_columns:
+      - "obezna_aktiva"                        # current_assets
+      - "zasoby"                               # inventories
+      - "cizi_zdroje"                          # pro dopočet current_liab
+
+  icr:
+    label: "ICR (Interest Coverage Ratio)"
+    formula: "ebitda / interest_expense"
+    warning_limit: "< 3.0x"
+    unit: "x"
+    notes:
+      - "Varování (ne WCR breach): ICR < 3.0x"
+    cribis_columns:
+      - "ebitda"
+      - "nakladove_uroky_a_podobne_naklady"
+
+  debt_to_equity:
+    label: "D/E Ratio (Cizí zdroje / Vlastní kapitál)"
+    formula: "cizi_zdroje / vlastni_kapital"
+    warning_limit: "> 3.0x"
+    unit: "x"
+    cribis_columns:
+      - "cizi_zdroje"                          # total_debt
+      - "vlastni_kapital"                      # equity
+
+  equity_ratio:
+    label: "Equity Ratio (Vlastní kapitál / Aktiva celkem)"
+    formula: "vlastni_kapital / aktiva_celkem"
+    warning_limit: "< 0.20"
+    unit: "%"
+    cribis_columns:
+      - "vlastni_kapital"
+      - "aktiva_celkem"
+
+  asset_turnover:
+    label: "Asset Turnover (Obrat aktiv)"
+    formula: "revenue / aktiva_celkem"
+    unit: "x"
+    notes:
+      - "Pokud dostupné přímo z CRIBIS: asset_turnover_direct"
+    cribis_columns:
+      - "cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii"  # revenue
+      - "aktiva_celkem"
+
+# ── WCR limity ───────────────────────────────────────────────────────────────
+wcr_limits:
+  max_leverage_ratio: 5.0
+  min_dscr: 1.2
+  max_utilisation_pct: 85.0
+  min_current_ratio: 1.2
+  max_dpd_days: 30
+
+# ── WCR varování (ne breach) ─────────────────────────────────────────────────
+wcr_warnings:
+  icr_warning_threshold: 3.0        # ICR < 3.0x → varování
+  max_debt_to_equity: 3.0           # D/E > 3.0x → varování
+  min_equity_ratio: 0.20            # Equity Ratio < 20 % → varování
+  min_quick_ratio: 1.0              # Quick Ratio < 1.0 → varování
+
+# ── CRIBIS column mapping ─────────────────────────────────────────────────────
+cribis_column_mapping:
+  revenue:           "cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii"
+  ebitda:            "ebitda"
+  ebit:              "ebit"
+  net_income:        "vysledek_hospodareni_za_ucetni_obdobi"
+  total_assets:      "aktiva_celkem"
+  current_assets:    "obezna_aktiva"
+  fixed_assets:      "stala_aktiva"
+  inventories:       "zasoby"
+  cash:              "penezni_prostredky"
+  equity:            "vlastni_kapital"
+  total_debt:        "cizi_zdroje"
+  bank_liab_st:      "zavazky_k_uverovym_institucim"
+  bank_liab_lt:      "zavazky_k_uverovym_institucim_1"
+  interest_expense:  "nakladove_uroky_a_podobne_naklady"
+  depreciation:      "odpisy"
+  income_tax:        "dan_z_prijmu_1"
+  current_ratio_direct: "likvidita_bezna"
+  yoy_revenue_pct:   "zmena_obrat_pct"
+  yoy_ebitda_pct:    "zmena_ebitda_pct"

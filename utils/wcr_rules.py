@@ -15,8 +15,52 @@ WCR_LIMITS: dict[str, float | int] = {
     "max_leverage_ratio":  5.0,   # Net Debt / EBITDA ≤ 5.0x
     "min_dscr":            1.2,   # DSCR ≥ 1.2
     "max_utilisation_pct": 85.0,  # Využití limitu ≤ 85%
-    "min_current_ratio":   1.0,   # Current Ratio ≥ 1.0
+    "min_current_ratio":   1.2,   # Current Ratio ≥ 1.2  (updated from 1.0)
     "max_dpd_days":        30,    # DPD ≤ 30 dní
+}
+
+# ── WCR varování (soft limity — ne breach, ale sledovat) ─────────────────────
+
+WCR_WARNINGS: dict[str, float] = {
+    "icr_warning_threshold": 3.0,   # ICR < 3.0x → varování (dříve 2.0)
+    "max_debt_to_equity":    3.0,   # D/E > 3.0x → varování
+    "min_equity_ratio":      0.20,  # Equity Ratio < 20 % → varování
+    "min_quick_ratio":       1.0,   # Quick Ratio < 1.0 → varování
+}
+
+# ── Oborové benchmarky (orientační) ──────────────────────────────────────────
+
+WCR_BENCHMARKS: dict[str, dict[str, float]] = {
+    "stavebnictvi": {
+        "leverage_median": 3.5,
+        "dscr_median":     1.5,
+        "current_ratio":   1.3,
+        "equity_ratio":    0.30,
+    },
+    "logistika": {
+        "leverage_median": 4.0,
+        "dscr_median":     1.3,
+        "current_ratio":   1.1,
+        "equity_ratio":    0.25,
+    },
+    "energetika": {
+        "leverage_median": 4.5,
+        "dscr_median":     1.4,
+        "current_ratio":   1.2,
+        "equity_ratio":    0.35,
+    },
+    "retail": {
+        "leverage_median": 3.0,
+        "dscr_median":     1.6,
+        "current_ratio":   1.4,
+        "equity_ratio":    0.28,
+    },
+    "default": {
+        "leverage_median": 3.8,
+        "dscr_median":     1.4,
+        "current_ratio":   1.2,
+        "equity_ratio":    0.28,
+    },
 }
 
 # ── Pipeline guardy ───────────────────────────────────────────────────────────
@@ -50,9 +94,9 @@ EW_THRESHOLDS: dict[str, float] = {
 
 WCR_RULE_DESCRIPTIONS: dict[str, str] = {
     "max_leverage_ratio":  "Leverage Ratio (Net Debt / EBITDA) ≤ 5.0x",
-    "min_dscr":            "DSCR (Operating CF / Debt Service) ≥ 1.2",
+    "min_dscr":            "DSCR (EBITDA - CAPEX - Daň) / Debt Service ≥ 1.2",
     "max_utilisation_pct": "Využití úvěrového limitu ≤ 85 %",
-    "min_current_ratio":   "Current Ratio (Oběžná aktiva / Kr. závazky) ≥ 1.0",
+    "min_current_ratio":   "Current Ratio (Oběžná aktiva / Kr. závazky) ≥ 1.2",
     "max_dpd_days":        "Days Past Due ≤ 30 dní",
 }
 

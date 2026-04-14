@@ -265,6 +265,10 @@ def get_cribis_data(ico: str) -> dict | None:
             CAST(zmena_obrat_pct  AS DOUBLE) AS yoy_revenue_change_pct,
             CAST(zmena_ebitda_pct AS DOUBLE) AS yoy_ebitda_change_pct,
             CAST(cisty_pracovni_kapital_v_tis_kc AS DOUBLE) AS net_working_capital_k,
+            CAST(odpisy           AS DOUBLE) AS depreciation,
+            CAST(stala_aktiva     AS DOUBLE) AS fixed_assets,
+            CAST(zasoby           AS DOUBLE) AS inventories,
+            CAST(dan_z_prijmu_1   AS DOUBLE) AS income_tax,
             is_suspicious,
             missing_key_kpi
         FROM {CAT}.{SCH}.silver_data_cribis_v3
@@ -301,6 +305,37 @@ def get_cribis_data(ico: str) -> dict | None:
         "dscr":           dscr,
         "dscr_note":      "Proxy: EBITDA/debt_service (ne přesný Op.CF/DS)" if dscr else None,
     }
+
+
+def get_cribis_prev_period(ico: str) -> dict | None:
+    """
+    CRIBIS data za předchozí účetní období (pro výpočet CAPEX).
+    Vrátí druhý nejnovější záznam (ORDER BY obdobi_do DESC LIMIT 1 OFFSET 1).
+    """
+    if IS_DEMO:
+        from utils.mock_data import _mock_cribis_prev
+        return _mock_cribis_prev(ico)
+
+    CAT = os.getenv("DATABRICKS_CATALOG_CRIBIS", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_CRIBIS", "investment_banking")
+
+    rows = query(f"""
+        SELECT
+            CAST(ic AS STRING) AS ic,
+            obdobi_od,
+            obdobi_do,
+            CAST(stala_aktiva AS DOUBLE) AS stala_aktiva,
+            CAST(odpisy       AS DOUBLE) AS odpisy,
+            CAST(ebitda       AS DOUBLE) AS ebitda,
+            CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE) AS revenue
+        FROM {CAT}.{SCH}.silver_data_cribis_v3
+        WHERE CAST(ic AS STRING) = '{ico}'
+        ORDER BY obdobi_do DESC
+        LIMIT 1 OFFSET 1
+    """)
+    if not rows:
+        return None
+    return rows[0]
 
 
 def get_flood_risk(city: str) -> dict:

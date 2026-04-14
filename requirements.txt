@@ -1,7 +1,27 @@
-streamlit>=1.35
-langgraph>=0.2
-anthropic>=0.25
-pyyaml>=6.0
+# ICM GenAI Platform — Tým 7 · Citi · Horizon AI bank
+# Generováno: 2026-04-14
 
-# Databricks — odkomentuj pro production
+# ── Agent pipeline ──────────────────────────────────────────────────────────
+langgraph>=0.2.0
+anthropic>=0.40.0
+
+# ── UI ───────────────────────────────────────────────────────────────────────
+streamlit>=1.35.0
+
+# ── Konfigurace ──────────────────────────────────────────────────────────────
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# ── OpenAI (odkomentuj pokud LLM_PROVIDER=openai) ────────────────────────────
+# langchain-openai>=0.3.0
+# openai>=1.0.0
+
+# ── Databricks (odkomentuj při přepnutí na production) ───────────────────────
 # databricks-sql-connector>=3.0.0
+# databricks-sdk>=0.20.0
+
+# ── News scraping (odkomentuj pokud spustíš prod EWS) ────────────────────────
+# requests>=2.31.0
+
+# ── Dev / testing ─────────────────────────────────────────────────────────────
+# pytest>=7.0.0

@@ -231,17 +231,16 @@ def data_extractor_agent(state: dict) -> dict:
         for attempt in range(1, API_RETRY_COUNT + 1):
             attempts += 1
             try:
-                import anthropic
+                from utils.llm_factory import get_llm
 
-                api_client = anthropic.Anthropic()
-                response = api_client.messages.create(
-                    model="claude-opus-4-6",
-                    max_tokens=1024,
+                api_client  = get_llm()
+                response    = api_client.complete(
                     system=prompt,
-                    messages=[{"role": "user", "content": user_message}],
+                    user_message=user_message,
+                    max_tokens=1024,
                 )
-                raw_text = response.content[0].text
-                tokens_used = response.usage.input_tokens + response.usage.output_tokens
+                raw_text    = response.text
+                tokens_used = response.tokens_used
                 json_text = _extract_json(raw_text)
                 llm_result = json.loads(json_text)
                 extraction_result["qualitative_notes"] = llm_result.get(

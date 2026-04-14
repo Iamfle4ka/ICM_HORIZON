@@ -595,24 +595,30 @@ def _mock_cribis(ico: str) -> dict | None:
         return None
 
     fd = client.get("financial_data", {})
-    ebitda    = float(fd.get("ebitda", 0) or 0)
-    revenue   = float(fd.get("revenue", 0) or 0)
-    net_debt  = float(fd.get("net_debt", 0) or 0)
+    ebitda      = float(fd.get("ebitda", 0) or 0)
+    revenue     = float(fd.get("revenue", 0) or 0)
+    net_debt    = float(fd.get("net_debt", 0) or 0)
     curr_assets = float(fd.get("current_assets", 0) or 0)
     curr_liab   = float(fd.get("current_liabilities", 0) or 0)
-    debt_service = float(fd.get("debt_service", 0) or 0)
-    op_cf       = float(fd.get("operating_cashflow", 0) or 0)
+    total_assets = float(fd.get("total_assets", 0) or 0)
 
     # Aproximace bankovních závazků z net_debt
-    bank_lt = round(net_debt * 0.65 + ebitda * 0.1, 0) if net_debt else 0
-    bank_st = round(net_debt * 0.35 - ebitda * 0.1, 0) if net_debt else 0
-    cash    = round(bank_st + bank_lt - net_debt, 0)
+    bank_lt      = round(net_debt * 0.65 + ebitda * 0.1, 0) if net_debt else 0
+    bank_st      = round(net_debt * 0.35 - ebitda * 0.1, 0) if net_debt else 0
+    cash         = max(0.0, round(bank_st + bank_lt - net_debt, 0))
     interest_exp = round(net_debt * 0.045, 0) if net_debt else 0
+    total_debt   = bank_st + bank_lt
 
-    # Výpočty WCR
+    # Odvozené hodnoty pro calculator.py
+    fixed_assets = max(0.0, total_assets - curr_assets)
+    inventories  = round(curr_assets * 0.30, 0)          # ~30 % oběžných aktiv
+    depreciation = round(ebitda * 0.15, 0)               # ~15 % EBITDA (D&A proxy)
+    income_tax   = round(ebitda * 0.55 * 0.19, 0)        # daň 19 % ze zisku před daní
+    equity       = max(0.0, total_assets - total_debt)
+
+    # WCR metriky
     leverage_ratio = round(net_debt / ebitda, 3) if ebitda else None
-    dscr_proxy = round(ebitda / (interest_exp + bank_st / 12), 3) if interest_exp else None
-    current_ratio = round(curr_assets / curr_liab, 2) if curr_liab else None
+    current_ratio  = round(curr_assets / curr_liab, 3) if curr_liab else None
 
     ew = client.get("ew_alert_level", "GREEN")
 
@@ -624,26 +630,56 @@ def _mock_cribis(ico: str) -> dict | None:
         "ebit":                  round(ebitda * 0.85, 0),
         "net_income":            round(ebitda * 0.55, 0),
         "current_ratio":         current_ratio,
-        "roa":                   round(ebitda / float(fd.get("total_assets", 1) or 1) * 100, 1),
-        "roe":                   round(ebitda * 0.55 / (float(fd.get("total_assets", 1)) * 0.4) * 100, 1),
+        "roa":                   round(ebitda / (total_assets or 1) * 100, 1),
+        "roe":                   round(ebitda * 0.55 / (equity or 1) * 100, 1),
         "ros":                   round(ebitda / revenue * 100, 1) if revenue else None,
-        "total_leverage_pct":    round(net_debt / float(fd.get("total_assets", 1) or 1) * 100, 1),
+        "total_leverage_pct":    round(total_debt / (total_assets or 1) * 100, 1),
         "bank_liabilities_st":   bank_st,
         "bank_liabilities_lt":   bank_lt,
         "cash":                  cash,
         "interest_expense":      interest_exp,
-        "total_assets":          fd.get("total_assets"),
+        "total_assets":          total_assets or None,
         "current_assets":        curr_assets,
+        "fixed_assets":          fixed_assets,
+        "inventories":           inventories,
+        "depreciation":          depreciation,
+        "income_tax":            income_tax,
+        "total_debt":            total_debt,
+        "equity":                equity,
         "net_debt":              net_debt,
         "leverage_ratio":        leverage_ratio,
-        "dscr":                  dscr_proxy,
-        "dscr_note":             "Proxy: EBITDA/debt_service" if dscr_proxy else None,
+        # dscr se přepočítá v calculator.py (CAPEX+daň vzorec)
+        "dscr":                  None,
+        "dscr_note":             "Počítáno v calculator.py (EBITDA-CAPEX-daň / DS)",
         "net_working_capital_k": round((curr_assets - curr_liab) / 1000, 0),
         "yoy_revenue_change_pct": -5.0 if ew == "RED" else 3.5,
         "yoy_ebitda_change_pct":  -8.0 if ew == "RED" else 2.0,
         "is_suspicious":         False,
         "missing_key_kpi":       False,
         "periods_count":         4,
+    }
+
+
+def _mock_cribis_prev(ico: str) -> dict | None:
+    """Mock CRIBIS data za předchozí účetní období (pro CAPEX výpočet)."""
+    client = get_client(ico)
+    if not client:
+        return None
+
+    fd = client.get("financial_data", {})
+    total_assets = float(fd.get("total_assets", 0) or 0)
+    curr_assets  = float(fd.get("current_assets", 0) or 0)
+    fixed_assets = max(0.0, total_assets - curr_assets)
+
+    # Předchozí rok: stálá aktiva přibližně o 5 % nižší (bez nových investic)
+    return {
+        "ic":          ico,
+        "stala_aktiva": round(fixed_assets * 0.95, 0),
+        "fixed_assets": round(fixed_assets * 0.95, 0),
+        "odpisy":       round(float(fd.get("ebitda", 0) or 0) * 0.14, 0),
+        "depreciation": round(float(fd.get("ebitda", 0) or 0) * 0.14, 0),
+        "ebitda":       round(float(fd.get("ebitda", 0) or 0) * 0.92, 0),
+        "revenue":      round(float(fd.get("revenue", 0) or 0) * 0.93, 0),
     }
 
 

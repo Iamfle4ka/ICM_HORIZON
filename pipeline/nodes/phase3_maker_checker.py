@@ -129,17 +129,16 @@ def memo_preparation_agent(state: dict) -> dict:
             f"ico={ico} iteration={iteration}"
         )
         try:
-            import anthropic
+            from utils.llm_factory import get_llm
 
-            api_client = anthropic.Anthropic()
-            response = api_client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=4096,
+            api_client  = get_llm()
+            response    = api_client.complete(
                 system=prompt,
-                messages=[{"role": "user", "content": user_message}],
+                user_message=user_message,
+                max_tokens=4096,
             )
-            draft_memo = response.content[0].text
-            tokens_used = response.usage.input_tokens + response.usage.output_tokens
+            draft_memo  = response.text
+            tokens_used = response.tokens_used
 
             log.info(
                 f"[MemoPreparationAgent] Memo napsáno | ico={ico} "
@@ -249,17 +248,16 @@ def quality_control_checker(state: dict) -> dict:
             f"ico={ico}"
         )
         try:
-            import anthropic
+            from utils.llm_factory import get_llm
 
-            api_client = anthropic.Anthropic()
-            response = api_client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=1024,
+            api_client  = get_llm()
+            response    = api_client.complete(
                 system=prompt,
-                messages=[{"role": "user", "content": user_message}],
+                user_message=user_message,
+                max_tokens=1024,
             )
-            raw_text = response.content[0].text
-            tokens_used = response.usage.input_tokens + response.usage.output_tokens
+            raw_text    = response.text
+            tokens_used = response.tokens_used
 
             check_result = json.loads(_extract_json(raw_text))
 

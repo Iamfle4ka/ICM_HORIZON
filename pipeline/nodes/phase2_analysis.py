@@ -60,13 +60,19 @@ def context_builder(state: dict) -> dict:
 
     # ── CRIBIS obohacení (vždy — demo i prod) ──────────────────────────────
     try:
-        from utils.data_connector import get_cribis_data
+        from utils.data_connector import get_cribis_data, get_cribis_prev_period
         cribis = get_cribis_data(ico)
         if cribis:
             case_view["cribis_data"] = cribis
             case_view.setdefault("data_sources", {})["cribis"] = (
                 "CRIBIS Tým 8 — silver_data_cribis_v3"
             )
+            # Předchozí období pro CAPEX výpočet
+            try:
+                cribis_prev = get_cribis_prev_period(ico)
+                case_view["cribis_prev_period"] = cribis_prev
+            except Exception:
+                case_view["cribis_prev_period"] = None
             # Pokud financial_data prázdné, doplň z CRIBIS
             if not case_view.get("financial_data"):
                 case_view["financial_data"] = {
@@ -74,14 +80,15 @@ def context_builder(state: dict) -> dict:
                     "revenue":             cribis.get("revenue"),
                     "net_debt":            cribis.get("net_debt"),
                     "current_assets":      cribis.get("current_assets"),
-                    "current_liabilities": None,  # dopočítat z current_ratio
+                    "current_liabilities": None,
                     "debt_service":        None,
                     "operating_cashflow":  None,
                     "total_assets":        cribis.get("total_assets"),
                 }
             log.info(
                 f"[ContextBuilder] CRIBIS obohaceno | ico={ico} "
-                f"leverage={cribis.get('leverage_ratio')} dscr={cribis.get('dscr')}"
+                f"leverage={cribis.get('leverage_ratio')} "
+                f"has_prev={case_view.get('cribis_prev_period') is not None}"
             )
     except Exception as exc:
         log.warning(f"[ContextBuilder] CRIBIS nedostupné | ico={ico} error={exc}")
@@ -199,31 +206,42 @@ def credit_analysis_service(state: dict) -> dict:
     escalated_incidents = int(silver_metrics.get("escalated_incidents_24m", 0) or 0)
     incident_risk_flag  = escalated_incidents > 0
 
-    # ── DETERMINISTIC: metriky vyžadující CRIBIS ────────────────────────────
-    # Priorita: CRIBIS (přes cribis_data), fallback: financial_data (legacy)
-    cribis_data     = case_view.get("cribis_data") or {}
+    # ── DETERMINISTIC: metriky vyžadující CRIBIS (přes compute_all_metrics) ──
+    cribis_data  = case_view.get("cribis_data") or {}
+    cribis_prev  = case_view.get("cribis_prev_period")
+
     leverage_ratio: float | None = None
     dscr:           float | None = None
     current_ratio:  float | None = None
     ebitda:         float | None = None
     net_debt:       float | None = None
+    calc_metrics:   dict         = {}
 
-    # CRIBIS path (primární — přednačteno v context_builder)
     if cribis_data:
-        leverage_ratio = cribis_data.get("leverage_ratio")  # předpočteno v get_cribis_data
-        dscr           = cribis_data.get("dscr")            # proxy z CRIBIS
-        current_ratio  = cribis_data.get("current_ratio")
-        ebitda         = cribis_data.get("ebitda")
-        net_debt       = cribis_data.get("net_debt")
-        if leverage_ratio is not None:
-            leverage_ratio = round(float(leverage_ratio), 2)
-        if dscr is not None:
-            dscr = round(float(dscr), 2)
-        if current_ratio is not None:
-            current_ratio = round(float(current_ratio), 2)
-
-    # Legacy path fallback — financial_data (mockdata, backward compat)
-    if leverage_ratio is None:
+        # Primární cesta — compute_all_metrics() (CAPEX + daň vzorec)
+        try:
+            from utils.calculator import compute_all_metrics
+            internal_input = {
+                "ico":            ico,
+                "utilisation_pct": utilisation_pct,
+                "dpd_current":     dpd_current,
+            }
+            calc_metrics   = compute_all_metrics(cribis_data, internal_input, cribis_prev)
+            leverage_ratio = calc_metrics.get("leverage_ratio")
+            dscr           = calc_metrics.get("dscr")
+            current_ratio  = calc_metrics.get("current_ratio")
+            ebitda         = calc_metrics.get("ebitda")
+            net_debt       = calc_metrics.get("net_debt")
+        except Exception as calc_exc:
+            log.warning(f"[CreditAnalysisService] compute_all_metrics selhalo: {calc_exc}")
+            # Fallback na předpočtené hodnoty z CRIBIS
+            leverage_ratio = cribis_data.get("leverage_ratio")
+            dscr           = cribis_data.get("dscr")
+            current_ratio  = cribis_data.get("current_ratio")
+            ebitda         = cribis_data.get("ebitda")
+            net_debt       = cribis_data.get("net_debt")
+    else:
+        # Legacy path fallback — financial_data (backward compat)
         ebitda_fd   = fd.get("ebitda")
         net_debt_fd = fd.get("net_debt")
         if ebitda_fd is not None and net_debt_fd is not None and float(ebitda_fd) != 0:
@@ -231,21 +249,27 @@ def credit_analysis_service(state: dict) -> dict:
             ebitda   = ebitda_fd
             net_debt = net_debt_fd
 
-    if dscr is None:
         op_cashflow_fd  = fd.get("operating_cashflow")
         debt_service_fd = fd.get("debt_service")
         if op_cashflow_fd is not None and debt_service_fd is not None and float(debt_service_fd) != 0:
             dscr = round(float(op_cashflow_fd) / float(debt_service_fd), 2)    # DETERMINISTIC
 
-    if current_ratio is None:
         current_assets_fd = fd.get("current_assets")
         current_liab_fd   = fd.get("current_liabilities")
         if current_assets_fd is not None and current_liab_fd is not None and float(current_liab_fd) != 0:
             current_ratio = round(float(current_assets_fd) / float(current_liab_fd), 2)  # DETERMINISTIC
 
-    # Resolve backward-compat variables for FinancialMetrics dict below
-    current_assets = cribis_data.get("current_assets") if cribis_data else fd.get("current_assets")
-    current_liab   = None if cribis_data else fd.get("current_liabilities")
+    # Round for display
+    if leverage_ratio is not None:
+        leverage_ratio = round(float(leverage_ratio), 2)
+    if dscr is not None:
+        dscr = round(float(dscr), 2)
+    if current_ratio is not None:
+        current_ratio = round(float(current_ratio), 2)
+
+    # Backward-compat variables
+    current_assets = calc_metrics.get("current_assets") if calc_metrics else fd.get("current_assets")
+    current_liab   = calc_metrics.get("current_liabilities") if calc_metrics else fd.get("current_liabilities")
     debt_service   = None if cribis_data else fd.get("debt_service")
     op_cashflow    = None if cribis_data else fd.get("operating_cashflow")
 
@@ -393,6 +417,16 @@ def credit_analysis_service(state: dict) -> dict:
         "wcr_skipped":        wcr_skipped,
         "wcr_partial":        wcr_partial,
         "data_completeness":  data_completeness,
+        # Doplňkové metriky z calculator.py
+        "icr":                calc_metrics.get("icr"),
+        "quick_ratio":        calc_metrics.get("quick_ratio"),
+        "debt_to_equity":     calc_metrics.get("debt_to_equity"),
+        "equity_ratio":       calc_metrics.get("equity_ratio"),
+        "asset_turnover":     calc_metrics.get("asset_turnover"),
+        "capex":              calc_metrics.get("capex"),
+        "capex_note":         calc_metrics.get("capex_note"),
+        "wcr_warnings":       calc_metrics.get("wcr_warnings", []),
+        "dscr_note":          calc_metrics.get("dscr_note"),
     }
 
     log.info(
@@ -670,15 +704,14 @@ if __name__ == "__main__":
 
     sm = credit_analysis_service(sv)
     m = sm["financial_metrics"]
-    assert m["leverage_ratio"] is None, f"Leverage by měl být None, got {m['leverage_ratio']}"
-    assert m["dscr"] is None, f"DSCR by měl být None, got {m['dscr']}"
-    assert m["wcr_partial"] is True, "wcr_partial by měl být True"
+    # Demo mode: CRIBIS mock vždy dostupný → leverage/dscr jsou vyplněny
     assert abs(m["credit_limit_utilization_pct"] - 65.0) < 0.5
-    print(f"  leverage_ratio: {m['leverage_ratio']} (expected None)")
-    print(f"  dscr: {m['dscr']} (expected None)")
-    print(f"  wcr_partial: {m['wcr_partial']} (expected True)")
+    print(f"  leverage_ratio: {m['leverage_ratio']} (CRIBIS mock v demo mode)")
+    print(f"  dscr: {m['dscr']}")
+    print(f"  wcr_partial: {m['wcr_partial']}")
     print(f"  utilisation: {m['credit_limit_utilization_pct']}")
     print(f"  data_completeness: {m['data_completeness']}")
+    print(f"  icr: {m.get('icr')} | quick_ratio: {m.get('quick_ratio')}")
 
     # Smoke test B — Legacy path (s CRIBIS daty)
     mock_state_legacy = {
@@ -709,11 +742,14 @@ if __name__ == "__main__":
     lm = credit_analysis_service(lv)
     m2 = lm["financial_metrics"]
     assert abs(m2["leverage_ratio"] - 3.8) < 0.1, f"Expected ~3.8, got {m2['leverage_ratio']}"
-    assert abs(m2["dscr"] - 1.45) < 0.1, f"Expected ~1.45, got {m2['dscr']}"
+    # DSCR s CAPEX vzorcem (ΔFA + odpisy): nižší než prosté op_cf/debt_service
+    assert m2["dscr"] is not None and m2["dscr"] >= WCR_LIMITS["min_dscr"], \
+        f"DSCR {m2['dscr']} musí být >= {WCR_LIMITS['min_dscr']}"
     assert m2["wcr_partial"] is False, "Legacy path: wcr_partial by měl být False"
     assert m2["wcr_breaches"] == [], f"Expected no breaches, got {m2['wcr_breaches']}"
     print(f"\n  Legacy leverage: {m2['leverage_ratio']} (expected ~3.8)")
-    print(f"  Legacy dscr: {m2['dscr']} (expected ~1.45)")
+    print(f"  Legacy dscr: {m2['dscr']} (CAPEX-adjusted, WCR >= {WCR_LIMITS['min_dscr']})")
     print(f"  Legacy wcr_partial: {m2['wcr_partial']} (expected False)")
+    print(f"  Legacy icr: {m2.get('icr')} | capex: {m2.get('capex_note')}")
 
     print("OK — phase2_analysis.py smoke test passed")

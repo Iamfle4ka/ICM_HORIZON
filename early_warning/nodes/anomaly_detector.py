@@ -21,6 +21,8 @@ def detect_anomalies(state: dict) -> dict:
         ico = client.get("ico", "")
         metrics = state["metrics_computed"].get(ico, {})
         client_alerts = _apply_rules(client, metrics)
+        # News signály (ISIR, ČNB, Google News)
+        client_alerts.extend(_apply_news_signals(client))
         # AI text pouze pro RED a AMBER, pouze pokud API key dostupný
         if client_alerts and os.getenv("ANTHROPIC_API_KEY"):
             client_alerts = _add_ai_recommendations(client, metrics, client_alerts)
@@ -47,6 +49,38 @@ def detect_anomalies(state: dict) -> dict:
         f"amber={sum(1 for a in alerts if a['alert_level']=='AMBER')}"
     )
     return {**state, "alerts": alerts, "audit_trail": audit}
+
+
+def _apply_news_signals(client: dict) -> list[dict]:
+    """Převede NewsSignal objekty na EWS alert dict formát."""
+    alerts: list[dict] = []
+    try:
+        from utils.news_fetcher import get_all_ews_signals, SignalLevel
+        ico          = client.get("ico", "")
+        company_name = client.get("company_name", "")
+        signals = get_all_ews_signals(ico, company_name)
+        now = datetime.now(timezone.utc).isoformat()
+        for s in signals:
+            if s.level == SignalLevel.INFO:
+                continue  # INFO signály neinzerujeme jako alerty
+            alerts.append({
+                "ico":                ico,
+                "company_name":       company_name,
+                "alert_type":         s.signal_type.value,
+                "alert_level":        s.level.value,
+                "current_value":      0.0,
+                "threshold":          0.0,
+                "baseline":           0.0,
+                "deviation_pct":      0.0,
+                "description":        s.description,
+                "recommended_action": "",
+                "detected_at":        now,
+                "source":             s.source,
+                "title":              s.title,
+            })
+    except Exception as exc:
+        log.warning(f"[AnomalyDetector] News signály selhaly: {exc}")
+    return alerts
 
 
 def _apply_rules(client: dict, metrics: dict) -> list[dict]:
@@ -157,12 +191,11 @@ def _add_ai_recommendations(client: dict, metrics: dict, alerts: list[dict]) -> 
     try:
         import json
 
-        import anthropic
-
         from skills import registry
+        from utils.llm_factory import get_llm
 
-        skill = registry.get("ew_analyzer_skill")
-        api_client = anthropic.Anthropic()
+        skill      = registry.get("ew_analyzer_skill")
+        api_client = get_llm()
 
         for alert in alerts:
             if alert["alert_level"] not in ("RED", "AMBER"):
@@ -173,17 +206,16 @@ def _add_ai_recommendations(client: dict, metrics: dict, alerts: list[dict]) -> 
                 f"Popis: {alert['description']}\n"
                 f"Hodnota: {alert['current_value']} | Práh: {alert['threshold']}"
             )
-            response = api_client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=256,
+            response = api_client.complete(
                 system=skill["prompt"],
-                messages=[{"role": "user", "content": ctx}],
+                user_message=ctx,
+                max_tokens=256,
             )
             try:
-                result = json.loads(response.content[0].text)
+                result = json.loads(response.text)
                 alert["recommended_action"] = result.get("recommended_action", "")
             except Exception:
-                alert["recommended_action"] = response.content[0].text[:200]
+                alert["recommended_action"] = response.text[:200]
 
     except Exception as exc:
         log.warning(f"[AnomalyDetector] AI recommendations failed: {exc}")
