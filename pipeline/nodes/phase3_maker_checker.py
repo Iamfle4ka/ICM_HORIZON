@@ -389,40 +389,50 @@ def policy_rules_engine(state: dict) -> dict:
 
     rules_detail = {
         "utilisation": {
+            "description": "Využití úvěrového limitu",
             "value": round(utilisation_pct, 1),
             "limit": WCR_LIMITS["max_utilisation_pct"],
             "passed": utilisation_pct <= WCR_LIMITS["max_utilisation_pct"],
             "source": "credit_history", "unit": "%", "skipped": False,
+            "note": "",
         },
         "dpd": {
+            "description": "Days Past Due (DPD)",
             "value": dpd_current,
             "limit": WCR_LIMITS["max_dpd_days"],
             "passed": dpd_current <= WCR_LIMITS["max_dpd_days"],
             "source": "credit_history", "unit": " dní", "skipped": False,
+            "note": "",
         },
         "leverage": (
-            {"value": leverage_ratio, "limit": WCR_LIMITS["max_leverage_ratio"],
+            {"description": "Leverage Ratio (Čistý dluh / EBITDA)",
+             "value": leverage_ratio, "limit": WCR_LIMITS["max_leverage_ratio"],
              "passed": leverage_ratio <= WCR_LIMITS["max_leverage_ratio"],
-             "source": "cribis_external", "unit": "x", "skipped": False}
+             "source": "cribis_external", "unit": "x", "skipped": False, "note": ""}
             if leverage_ratio is not None else
-            {"value": None, "limit": WCR_LIMITS["max_leverage_ratio"],
-             "passed": None, "note": "Vyžaduje CRIBIS", "skipped": True, "unit": "x"}
+            {"description": "Leverage Ratio (Čistý dluh / EBITDA)",
+             "value": None, "limit": WCR_LIMITS["max_leverage_ratio"],
+             "passed": None, "note": "Čeká na CRIBIS data (Tým 8)", "skipped": True, "unit": "x"}
         ),
         "dscr": (
-            {"value": dscr, "limit": WCR_LIMITS["min_dscr"],
+            {"description": "DSCR (Op. Cash Flow / Debt Service)",
+             "value": dscr, "limit": WCR_LIMITS["min_dscr"],
              "passed": dscr >= WCR_LIMITS["min_dscr"],
-             "source": "cribis_external", "unit": "", "skipped": False}
+             "source": "cribis_external", "unit": "", "skipped": False, "note": ""}
             if dscr is not None else
-            {"value": None, "limit": WCR_LIMITS["min_dscr"],
-             "passed": None, "note": "Vyžaduje CRIBIS", "skipped": True, "unit": ""}
+            {"description": "DSCR (Op. Cash Flow / Debt Service)",
+             "value": None, "limit": WCR_LIMITS["min_dscr"],
+             "passed": None, "note": "Čeká na CRIBIS data (Tým 8)", "skipped": True, "unit": ""}
         ),
         "current_ratio": (
-            {"value": current_ratio, "limit": WCR_LIMITS["min_current_ratio"],
+            {"description": "Current Ratio (Oběžná aktiva / Kr. závazky)",
+             "value": current_ratio, "limit": WCR_LIMITS["min_current_ratio"],
              "passed": current_ratio >= WCR_LIMITS["min_current_ratio"],
-             "source": "cribis_external", "unit": "", "skipped": False}
+             "source": "cribis_external", "unit": "", "skipped": False, "note": ""}
             if current_ratio is not None else
-            {"value": None, "limit": WCR_LIMITS["min_current_ratio"],
-             "passed": None, "note": "Vyžaduje CRIBIS", "skipped": True, "unit": ""}
+            {"description": "Current Ratio (Oběžná aktiva / Kr. závazky)",
+             "value": None, "limit": WCR_LIMITS["min_current_ratio"],
+             "passed": None, "note": "Čeká na CRIBIS data (Tým 8)", "skipped": True, "unit": ""}
         ),
     }
     passed_rules = sum(1 for r in rules_detail.values() if r.get("passed") is True)

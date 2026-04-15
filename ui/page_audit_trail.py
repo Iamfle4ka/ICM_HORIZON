@@ -7,7 +7,8 @@ import streamlit as st
 
 from ui.styles import CITI_BLUE, node_type_badge
 from utils.audit import format_audit_trail_summary
-from utils.mock_data import get_mock_agent_result, get_portfolio
+from utils.mock_data import get_mock_agent_result
+from utils.data_connector import get_portfolio_clients as get_portfolio
 
 
 def render_audit_trail_page() -> None:

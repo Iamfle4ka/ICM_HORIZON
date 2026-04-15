@@ -10,6 +10,9 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from langgraph.graph import END, START, StateGraph
 
 from early_warning.nodes.alert_dispatcher import dispatch_alerts

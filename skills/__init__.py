@@ -126,6 +126,44 @@ class SkillsRegistry:
         """Alias pro get_all_skills() — kompatibilita s CONTINUATION_PROMPT."""
         return self.get_all_skills()
 
+    def save_skill(self, skill_key: str, skill_data: dict) -> Path:
+        """
+        Uloží nový skill jako YAML soubor a invaliduje cache.
+
+        Args:
+            skill_key: Klíč souboru (např. "my_team_skill") — použije se jako název souboru
+            skill_data: Dict s povinnými klíči: name, version, prompt, node_type
+
+        Returns:
+            Path k uloženému souboru
+
+        Raises:
+            ValueError: Pokud chybí povinné klíče
+        """
+        required_keys = {"name", "version", "prompt", "node_type"}
+        missing = required_keys - skill_data.keys()
+        if missing:
+            raise ValueError(f"Chybí povinné klíče: {missing}")
+
+        skill_path = _SKILLS_DIR / f"{skill_key}.yaml"
+        with skill_path.open("w", encoding="utf-8") as f:
+            yaml.dump(skill_data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        # Invalidate cache for this skill
+        self._cache.pop(skill_key, None)
+        log.info(f"[SkillsRegistry] Skill uložen | key={skill_key} | path={skill_path}")
+        return skill_path
+
+    def delete_skill(self, skill_key: str) -> bool:
+        """Smaže skill soubor a vyčistí cache. Vrátí True pokud byl soubor nalezen."""
+        skill_path = _SKILLS_DIR / f"{skill_key}.yaml"
+        self._cache.pop(skill_key, None)
+        if skill_path.exists():
+            skill_path.unlink()
+            log.info(f"[SkillsRegistry] Skill smazán | key={skill_key}")
+            return True
+        return False
+
     def clear_cache(self) -> None:
         """Vyčistí cache (pro testování)."""
         self._cache.clear()

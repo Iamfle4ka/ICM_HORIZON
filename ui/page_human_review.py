@@ -6,7 +6,8 @@ Underwriter 4-Eyes Rule: zobrazí memo, WCR status a umožní rozhodnutí.
 import streamlit as st
 
 from ui.styles import CITI_BLUE, fmt_pct, highlight_citations, wcr_icon
-from utils.mock_data import get_mock_agent_result, get_portfolio
+from utils.mock_data import get_mock_agent_result
+from utils.data_connector import get_portfolio_clients as get_portfolio
 
 
 def render_human_review_page() -> None:
@@ -102,15 +103,33 @@ def _render_review_panel(result: dict, ico: str) -> None:
         wcr_report = result.get("wcr_report", {})
         if wcr_report:
             for rule in wcr_report.get("rules", []):
-                passed = rule.get("passed", True)
-                icon = wcr_icon(passed)
-                bg = "#F0FDF4" if passed else "#FEF2F2"
-                unit = rule.get("unit", "")
+                passed  = rule.get("passed")   # True / False / None
+                skipped = rule.get("skipped", False)
+                unit    = rule.get("unit", "")
+                val     = rule.get("value")
+                note    = rule.get("note", "")
+
+                if skipped or passed is None:
+                    icon = "⏭️"
+                    bg   = "#F9FAFB"
+                    val_str = "N/A"
+                    extra = f" · <em style='color:#9CA3AF'>{note}</em>" if note else ""
+                elif passed:
+                    icon = "✅"
+                    bg   = "#F0FDF4"
+                    val_str = f"{val}{unit}"
+                    extra = ""
+                else:
+                    icon = "❌"
+                    bg   = "#FEF2F2"
+                    val_str = f"{val}{unit}"
+                    extra = ""
+
                 st.markdown(
                     f"<div style='background:{bg};padding:0.5rem 0.8rem;border-radius:6px;margin:0.3rem 0'>"
                     f"{icon} <strong>{rule.get('description','')}</strong> — "
-                    f"Hodnota: <strong>{rule.get('value','N/A')}{unit}</strong> "
-                    f"(Limit: {rule.get('limit','N/A')}{unit})</div>",
+                    f"Hodnota: <strong>{val_str}</strong> "
+                    f"(Limit: {rule.get('limit','N/A')}{unit}){extra}</div>",
                     unsafe_allow_html=True,
                 )
         else:

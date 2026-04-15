@@ -15,6 +15,9 @@ Spuštění:
 import logging
 import sys
 
+from dotenv import load_dotenv
+load_dotenv()  # загрузить .env ДО всех остальных импортов (data_connector читает ICM_ENV при импорте)
+
 import streamlit as st
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -27,7 +30,7 @@ log = logging.getLogger(__name__)
 
 # ── Streamlit konfigurace ──────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="ICM GenAI Platform — Citi Bank",
+    page_title="GenAI pro underwriting — Horizon Bank",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -38,8 +41,7 @@ from ui.styles import CITI_BLUE, GLOBAL_CSS
 from ui.page_portfolio import render_portfolio_page
 from ui.page_credit_memo import render_credit_memo_page
 from ui.page_human_review import render_human_review_page
-from ui.page_audit_trail import render_audit_trail_page
-from ui.page_early_warning import render_early_warning_page
+from ui.page_cases_log import render_cases_log_page
 from ui.page_settings import render_settings_page
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
@@ -51,13 +53,21 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 def render_sidebar() -> str:
     """Renderuje sidebar navigaci a vrátí vybranou stránku."""
     with st.sidebar:
+        import base64, pathlib
+        _logo_path = pathlib.Path(__file__).parent / "static" / "horizon_logo.png"
+        if _logo_path.exists():
+            _logo_b64 = base64.b64encode(_logo_path.read_bytes()).decode()
+            _logo_html = f'<img src="data:image/png;base64,{_logo_b64}" style="width:80%;max-width:160px;margin-bottom:0.4rem">'
+        else:
+            _logo_html = '<div style="font-size:1.8rem">🏦</div>'
+
         st.markdown(
             f"""
             <div style="background:{CITI_BLUE};color:white;padding:1rem;
                  border-radius:10px;margin-bottom:1rem;text-align:center">
-                <div style="font-size:1.8rem">🏦</div>
-                <div style="font-weight:700;font-size:1.1rem">ICM GenAI</div>
-                <div style="font-size:0.75rem;opacity:0.8">Citi Bank · Tým 7</div>
+                {_logo_html}
+                <div style="font-weight:700;font-size:0.95rem;margin-top:0.3rem">GenAI pro underwriting</div>
+                <div style="font-size:0.72rem;opacity:0.8">Horizon Bank</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -66,12 +76,11 @@ def render_sidebar() -> str:
         st.markdown("### Navigace")
 
         pages = {
-            "portfolio":      "📊 Portfolio Dashboard",
-            "credit_memo":    "📄 Credit Memo",
-            "human_review":   "👁️ Human Review",
-            "audit_trail":    "🔍 Audit Trail",
-            "early_warning":  "⚠️ Early Warning",
-            "settings":       "⚙️ Nastavení",
+            "portfolio":   "📊 Portfolio + EWS",
+            "credit_memo": "📄 Credit Memo",
+            "human_review":"👁️ Human Review",
+            "cases_log":   "📋 Cases Log",
+            "settings":    "⚙️ Nastavení",
         }
 
         # Výchozí stránka
@@ -90,8 +99,8 @@ def render_sidebar() -> str:
         # Aktuální IČO info
         selected_ico = st.session_state.get("selected_ico", "")
         if selected_ico:
-            from utils.mock_data import get_client
-            client = get_client(selected_ico)
+            from utils.data_connector import get_client_info
+            client = get_client_info(selected_ico)
             if client:
                 ew = client.get("ew_alert_level", "GREEN")
                 ew_icons = {"GREEN": "🟢", "AMBER": "🟡", "RED": "🔴"}
@@ -106,7 +115,7 @@ def render_sidebar() -> str:
         # Systémové info
         st.markdown(
             "<div style='font-size:0.75rem;color:#9CA3AF'>"
-            "ICM GenAI Platform v1.0<br>"
+            "GenAI pro underwriting v1.0<br>"
             "LangGraph + Claude API<br>"
             "4-Eyes Rule enforced<br>"
             "Audit Trail: immutable"
@@ -131,10 +140,8 @@ def main() -> None:
         render_credit_memo_page()
     elif page == "human_review":
         render_human_review_page()
-    elif page == "audit_trail":
-        render_audit_trail_page()
-    elif page == "early_warning":
-        render_early_warning_page()
+    elif page == "cases_log":
+        render_cases_log_page()
     elif page == "settings":
         render_settings_page()
     else:

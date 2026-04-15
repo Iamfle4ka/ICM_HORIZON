@@ -22,6 +22,9 @@ Demo mode: pipeline spuštěna s mock daty (bez real API volání).
 
 import logging
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from langgraph.graph import END, START, StateGraph
 
 from pipeline.nodes.phase1_extraction import data_extractor_agent, extraction_validator

@@ -397,13 +397,13 @@ def _mock_memo(client: dict, metrics: dict | None = None) -> str:
     }.get(ew, "")
 
     return f"""# Credit Memo — {name} ({ico})
-**Datum:** {datetime.now(timezone.utc).strftime('%Y-%m-%d')}  |  **Stupeň důvěrnosti:** INTERNÍ  |  **Generováno:** ICM GenAI Platform · Tým 7
+**Datum:** {datetime.now(timezone.utc).strftime('%Y-%m-%d')}  |  **Stupeň důvěrnosti:** INTERNÍ  |  **Generováno:** GenAI pro underwriting · Horizon Bank
 
 ---
 
 ## 1. Executive Summary
 
-Společnost {name} (IČO: {ico}) [CITATION:{src1}] je aktivním klientem Citi Bank
+Společnost {name} (IČO: {ico}) [CITATION:{src1}] je aktivním klientem Horizon Bank
 s úvěrovým limitem {limit_m:.0f} M CZK [CITATION:{src1}] a aktuálním čerpáním
 {util_m:.1f} M CZK [CITATION:{src1}] ({metrics['utilisation_pct']:.1f} % limitu).
 
@@ -444,7 +444,7 @@ Na základě dostupných dat a předem vypočtených metrik [CITATION:{src1}] do
 {"**SCHVÁLIT** — klient splňuje všechna WCR kritéria." if not _compute_breaches(client) else f"**PODMÍNEČNĚ SCHVÁLIT** — klient vykazuje {len(_compute_breaches(client))} WCR porušení vyžadujících pozornost underwritera."}
 
 ---
-*Generováno: ICM GenAI Platform · Tým 7 · Citi Bank*
+*Generováno: GenAI pro underwriting · Horizon Bank*
 *Tento dokument vyžaduje schválení underwritera (4-Eyes Rule)*
 *Veškerá čísla pocházejí z deterministicky vypočtených metrik — LLM matematiku nepočítal.*
 """
