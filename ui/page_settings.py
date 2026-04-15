@@ -484,6 +484,47 @@ def _render_databricks_tab() -> None:
 
     st.markdown("---")
     with st.expander("📐 Systémová architektura", expanded=False):
+        import base64, pathlib as _pl
+        _static = _pl.Path(__file__).parent.parent / "static"
+
+        _arc_path = _static / "architecture_v5.jpg"
+        if _arc_path.exists():
+            _arc_b64 = base64.b64encode(_arc_path.read_bytes()).decode()
+            st.markdown("**Agentní architektura**")
+            st.markdown(
+                f'<img src="data:image/jpeg;base64,{_arc_b64}" style="width:100%;border-radius:8px;margin-bottom:1rem">',
+                unsafe_allow_html=True,
+            )
+
+        _lin_path = _static / "data_lineage_v3.jpg"
+        if _lin_path.exists():
+            _lin_b64 = base64.b64encode(_lin_path.read_bytes()).decode()
+            st.markdown("**Data Lineage & Platform Architecture**")
+            st.markdown(
+                f'<img src="data:image/jpeg;base64,{_lin_b64}" style="width:100%;border-radius:8px;margin-bottom:1rem">',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("**Gap analýza: Diagram vs. Implementace**")
+        st.markdown(
+            "| Vrstva | Status | Gap |\n"
+            "|--------|--------|-----|\n"
+            "| Bronze Layer / Data Lake | ❌ | Kód jde přímo na Silver, žádná raw vrstva |\n"
+            "| Quarantine Zone | ❌ | Pouze FROZEN status, bez karanténního workflow |\n"
+            "| Helios / SharePoint downstream | ❌ | Memo pouze v Streamlit, žádný export |\n"
+            "| CMP / CBS / CRM upstream | ❌ | Nejsou v data_connector.py |\n"
+            "| ESG Datamart prod write | ⚠️ | dispatcher.py má TODO pro INSERT |\n"
+            "| EWS Delta write + notifikace | ⚠️ | alert_dispatcher.py má TODO |\n"
+            "| PII Masking (Silver ingest) | ⚠️ | GDPR sanitize je až po approval |\n"
+            "| Silver Layer (Databricks) | ✅ | Single source of truth |\n"
+            "| Case View + LLM Draft | ✅ | phase2 + phase3 |\n"
+            "| 4-Eyes Rule (Human Review) | ✅ | phase4 |\n"
+            "| Immutable Audit Trail | ✅ | utils/audit.py |\n"
+            "| CRIBIS + Justice + ARES fallback | ✅ | data_fetcher.py cascade |\n"
+            "| ESG pipeline architektura | ✅ | collector→transformer→dispatcher |\n"
+            "| EWS portfolio monitoring | ✅ | early_warning/ DP2 pipeline |\n"
+        )
+
         st.code("""
 Upstream → Bronze → Silver ─────────────────────────────┐
              (DQ)   (clean)                              │
