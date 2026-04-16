@@ -159,6 +159,7 @@ def _render_review_panel(result: dict, ico: str) -> None:
         if st.button("🔄 Změnit rozhodnutí", key=f"change_dec_{ico}"):
             del st.session_state[decision_key]
             st.rerun()
+        _render_export_section(result, ico)
         return
 
     st.markdown("#### 📋 Rozhodnutí underwritera")
@@ -188,6 +189,57 @@ def _render_review_panel(result: dict, ico: str) -> None:
             f"⚠️ Upozornění: Klient má {len(breaches)} WCR porušení. "
             "Zkontrolujte WCR Report před rozhodnutím."
         )
+
+    _render_export_section(result, ico)
+
+
+def _render_export_section(result: dict, ico: str) -> None:
+    """Renderuje sekci pro export Credit Memo."""
+    from utils.helios_export import get_download_bytes, export_to_helios
+
+    st.markdown("---")
+    st.markdown("#### 📤 Export Credit Memo")
+
+    col_md, col_txt, col_helios = st.columns(3)
+
+    with col_md:
+        content, fname, mime = get_download_bytes(result, "md")
+        st.download_button(
+            label="⬇️ Stáhnout Markdown",
+            data=content,
+            file_name=fname,
+            mime=mime,
+            use_container_width=True,
+            key=f"dl_md_{ico}",
+        )
+
+    with col_txt:
+        content_txt, fname_txt, mime_txt = get_download_bytes(result, "txt")
+        st.download_button(
+            label="⬇️ Stáhnout TXT",
+            data=content_txt,
+            file_name=fname_txt,
+            mime=mime_txt,
+            use_container_width=True,
+            key=f"dl_txt_{ico}",
+        )
+
+    with col_helios:
+        if st.button(
+            "🏭 Odeslat do Helios",
+            key=f"helios_{ico}",
+            use_container_width=True,
+        ):
+            run_id = result.get("request_id") or result.get("run_id")
+            export_result = export_to_helios(result, run_id=run_id)
+            if export_result["success"]:
+                if export_result["mode"] == "demo":
+                    st.success("✅ Demo: Helios export simulován úspěšně.")
+                else:
+                    doc_id = export_result.get("helios_doc_id", "N/A")
+                    st.success(f"✅ Odesláno do Helios | Doc ID: {doc_id}")
+            else:
+                st.error(f"❌ Helios export selhal: {export_result.get('error', 'Neznámá chyba')}")
 
 
 def _record_decision(ico: str, decision: str, comments: str) -> None:

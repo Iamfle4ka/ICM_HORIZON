@@ -403,9 +403,12 @@ def _render_databricks_tab() -> None:
     st.markdown("---")
     st.markdown("**CRIBIS (Tým 8):**")
     st.markdown(
-        "`vse_banka.investment_banking.silver_data_cribis_v3`  \n"
-        "Klíč: `ic` (VARCHAR) — JOIN přes `CAST(ic AS STRING) = ico`  \n"
-        "Poskytuje: EBITDA, Leverage, DSCR (proxy), Current Ratio, YoY trendy"
+        "`vse_banka.investment_banking.investment_corporate_snapshot`  \n"
+        "View na `silver_data_cribis_v3` filtrovaný pro aktuální snapshot (`valid_to IS NULL`)  \n"
+        "Klíč: `ic` (STRING) — JOIN přes `CAST(TRY_CAST(ic AS BIGINT) AS STRING) = _norm_ico(ico)`  \n"
+        "EBITDA = `provozni_hospodarsky_vysledek + odpisy`  \n"
+        "Current Ratio = `obezna_aktiva / kratkodobe_zavazky`  \n"
+        "Poskytuje: EBITDA, Leverage, DSCR (proxy), Current Ratio"
     )
 
     st.markdown("**ESG / Flood data:**")
@@ -438,23 +441,23 @@ def _render_databricks_tab() -> None:
             sch_cr = os.getenv("DATABRICKS_SCHEMA_CRIBIS", "investment_banking")
             from utils.data_connector import query, _norm_ico
             try:
-                # Test 1: ukáž raw ic hodnoty pro toto IČO
+                # Test 1: ukáž raw ic hodnoty pro toto IČO z nového view
                 raw = query(f"""
-                    SELECT CAST(ic AS STRING) AS ic_raw,
+                    SELECT ic,
                            CAST(TRY_CAST(ic AS BIGINT) AS STRING) AS ic_norm,
-                           nazev_subjektu, obdobi_do
-                    FROM {cat_cr}.{sch_cr}.silver_data_cribis_v3
+                           hlavni_nace_popis,
+                           obdobi_od, obdobi_do
+                    FROM {cat_cr}.{sch_cr}.investment_corporate_snapshot
                     WHERE CAST(TRY_CAST(ic AS BIGINT) AS STRING) = '{_norm_ico(diag_ico)}'
-                    ORDER BY obdobi_do DESC
                     LIMIT 3
                 """)
                 if raw:
-                    st.success(f"✅ CRIBIS vrátil {len(raw)} záznam(ů) pro IČO `{diag_ico}`")
+                    st.success(f"✅ investment_corporate_snapshot vrátil {len(raw)} záznam(ů) pro IČO `{diag_ico}`")
                     for r in raw:
                         st.markdown(
-                            f"- `ic_raw`=**{r['ic_raw']}** · `ic_norm`=**{r['ic_norm']}** · "
-                            f"firma: **{r.get('nazev_subjektu', '—')}** · "
-                            f"období do: **{r.get('obdobi_do', '—')}**"
+                            f"- `ic`=**{r['ic']}** · `ic_norm`=**{r['ic_norm']}** · "
+                            f"NACE: **{r.get('hlavni_nace_popis', '—')}** · "
+                            f"období: **{r.get('obdobi_od', '—')}** – **{r.get('obdobi_do', '—')}**"
                         )
 
                     # Test 2: ukáž metriky
@@ -462,23 +465,24 @@ def _render_databricks_tab() -> None:
                     cribis = get_cribis_data(diag_ico)
                     if cribis:
                         st.markdown("**Vypočtené metriky:**")
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Leverage", f"{cribis.get('leverage_ratio', 'N/A')}x")
-                        c2.metric("DSCR", f"{cribis.get('dscr', 'N/A')}")
-                        c3.metric("Current Ratio", f"{cribis.get('current_ratio', 'N/A')}")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("EBITDA", f"{cribis.get('ebitda', 0):,.0f}")
+                        c2.metric("Leverage", f"{cribis.get('leverage_ratio', 'N/A')}x")
+                        c3.metric("DSCR", f"{cribis.get('dscr', 'N/A')}")
+                        c4.metric("Current Ratio", f"{cribis.get('current_ratio', 'N/A')}")
                 else:
-                    # Diagnostika proč nesedí
+                    # Diagnostika — ukáž sample z view
                     sample = query(f"""
-                        SELECT CAST(ic AS STRING) AS ic_raw,
+                        SELECT ic,
                                CAST(TRY_CAST(ic AS BIGINT) AS STRING) AS ic_norm,
-                               nazev_subjektu
-                        FROM {cat_cr}.{sch_cr}.silver_data_cribis_v3
+                               hlavni_nace_popis
+                        FROM {cat_cr}.{sch_cr}.investment_corporate_snapshot
                         LIMIT 5
                     """)
                     st.error(f"❌ Žádný záznam pro IČO `{diag_ico}` (normalizováno: `{_norm_ico(diag_ico)}`).")
-                    st.markdown("**Ukázka prvních 5 `ic` hodnot v CRIBIS:**")
+                    st.markdown("**Ukázka prvních 5 `ic` hodnot v investment_corporate_snapshot:**")
                     for r in sample:
-                        st.markdown(f"- raw=`{r['ic_raw']}` · norm=`{r['ic_norm']}` · {r.get('nazev_subjektu','')}")
+                        st.markdown(f"- ic=`{r['ic']}` · norm=`{r['ic_norm']}` · {r.get('hlavni_nace_popis','')}")
             except Exception as exc:
                 st.error(f"Chyba při dotazu: {exc}")
 

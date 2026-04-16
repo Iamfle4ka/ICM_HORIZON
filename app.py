@@ -43,6 +43,7 @@ from ui.page_credit_memo import render_credit_memo_page
 from ui.page_human_review import render_human_review_page
 from ui.page_cases_log import render_cases_log_page
 from ui.page_settings import render_settings_page
+from ui.page_data_steward import render_data_steward_page
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
@@ -76,11 +77,12 @@ def render_sidebar() -> str:
         st.markdown("### Navigace")
 
         pages = {
-            "portfolio":   "📊 Portfolio + EWS",
-            "credit_memo": "📄 Credit Memo",
-            "human_review":"👁️ Human Review",
-            "cases_log":   "📋 Cases Log",
-            "settings":    "⚙️ Nastavení",
+            "portfolio":     "📊 Portfolio + EWS",
+            "credit_memo":   "📄 Credit Memo",
+            "human_review":  "👁️ Human Review",
+            "cases_log":     "📋 Cases Log",
+            "data_steward":  "🔬 Data Steward",
+            "settings":      "⚙️ Nastavení",
         }
 
         # Výchozí stránka
@@ -142,6 +144,8 @@ def main() -> None:
         render_human_review_page()
     elif page == "cases_log":
         render_cases_log_page()
+    elif page == "data_steward":
+        render_data_steward_page()
     elif page == "settings":
         render_settings_page()
     else:

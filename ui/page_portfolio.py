@@ -44,7 +44,19 @@ def render_portfolio_page() -> None:
             _load_portfolio.clear()
             st.rerun()
 
-    portfolio = _load_portfolio()
+    try:
+        portfolio = _load_portfolio()
+    except Exception as _load_exc:
+        _load_portfolio.clear()
+        from utils.mock_data import get_portfolio as _gp
+        portfolio = [{**c, "_fallback": True} for c in _gp()]
+        st.error(f"Databricks nedostupný — zobrazuji demo data. Chyba: {_load_exc}")
+
+    if any(c.get("_fallback") for c in portfolio):
+        st.warning(
+            "⚠️ Silver tabulky nedostupné — zobrazuji demo data. "
+            "Zkontroluj Databricks připojení v Nastavení → Databricks."
+        )
 
     # ── Souhrnné KPI karty ─────────────────────────────────────────────────────
     ew_counts = {"GREEN": 0, "AMBER": 0, "RED": 0}

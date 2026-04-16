@@ -12,13 +12,19 @@ from ui.styles import (
     highlight_citations,
     wcr_icon,
 )
-from utils.data_connector import get_client_info, get_portfolio_clients
+from utils.data_connector import get_client_info, get_portfolio_clients, search_companies_snapshot
 from utils.mock_data import get_mock_agent_result
 
 
 @st.cache_data(ttl=300)
 def _load_portfolio() -> list[dict]:
     return get_portfolio_clients()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _search_all_companies(query: str) -> list[dict]:
+    """Hledá firmy přes investment_corporate_snapshot (46 k+)."""
+    return search_companies_snapshot(query, limit=80)
 
 
 def render_credit_memo_page() -> None:
@@ -39,49 +45,106 @@ def render_credit_memo_page() -> None:
         unsafe_allow_html=True,
     )
 
-    portfolio = _load_portfolio()
-    if not portfolio:
-        st.error("Portfolio je prázdné — nepodařilo se načíst klienty z Databricks.")
-        return
+    try:
+        portfolio = _load_portfolio()
+    except Exception as _load_exc:
+        _load_portfolio.clear()
+        from utils.mock_data import get_portfolio as _gp
+        portfolio = [{**c, "_fallback": True} for c in _gp()]
+
+    if any(c.get("_fallback") for c in portfolio):
+        st.warning(
+            "⚠️ Databricks nedostupný — zobrazuji demo data. "
+            "Zkontroluj připojení v Nastavení → Databricks."
+        )
 
     # ── Vyhledávání klienta ────────────────────────────────────────────────────
+    # Podporuje všechny firmy (46 k+) z investment_corporate_snapshot,
+    # nejen klienty portfolia. Portfolio klienti jsou označeni hvězdičkou.
     search = st.text_input(
-        "🔍 Hledat klienta (název nebo IČO)",
-        placeholder="Např. Tech Data nebo 23110303",
+        "🔍 Hledat firmu (název nebo IČO) — klienti portfolia i ostatní firmy",
+        placeholder="Např. Stavební nebo 27082440",
         key="client_search",
     )
 
-    filtered_portfolio = portfolio
-    if search.strip():
-        q = search.strip().lower()
-        filtered_portfolio = [
+    portfolio_icos = {c["ico"] for c in portfolio}
+
+    q = search.strip()
+    if q:
+        # Hledáme v portfoliu
+        ql = q.lower()
+        from_portfolio = [
             c for c in portfolio
-            if q in c["company_name"].lower() or q in c["ico"]
+            if ql in c["company_name"].lower() or ql in c["ico"]
         ]
+        # Hledáme ve všech firmách (snapshot)
+        snapshot_hits = _search_all_companies(q)
+        # Přidáme pouze ty, co nejsou v portfoliu
+        extra = [s for s in snapshot_hits if s["ico"] not in portfolio_icos]
 
-    if not filtered_portfolio:
-        st.warning(f"Žádný klient nenalezen pro: '{search}'")
-        return
+        display_clients = from_portfolio + extra
 
-    ico_options = [f"{c['ico']} — {c['company_name']}" for c in filtered_portfolio]
-    ico_map = {f"{c['ico']} — {c['company_name']}": c["ico"] for c in filtered_portfolio}
+        if not display_clients:
+            st.warning(f"Žádná firma nenalezena pro: '{q}'")
+            # Umožníme přímý vstup IČO
+            if q.isdigit() and 6 <= len(q) <= 8:
+                st.info(f"Firma s IČO `{q}` nebyla nalezena v databázi, ale můžete zkusit spustit pipeline přímo.")
+                direct_ico = q
+            else:
+                return
+            selected_ico = direct_ico
+        else:
+            def _label(c: dict) -> str:
+                star = "★ " if c["ico"] in portfolio_icos else ""
+                city = f" · {c['city']}" if c.get("city") else ""
+                return f"{star}{c['ico']} — {c['company_name']}{city}"
 
-    default_idx = 0
-    if ico:
-        matching = [i for i, opt in enumerate(ico_options) if opt.startswith(ico)]
-        if matching:
-            default_idx = matching[0]
+            ico_options = [_label(c) for c in display_clients]
+            ico_map = {_label(c): c["ico"] for c in display_clients}
 
-    selected_label = st.selectbox(
-        "Vyberte klienta",
-        options=ico_options,
-        index=default_idx,
-        key="memo_ico_select",
-    )
-    if selected_label is None:
-        st.info("👆 Vyberte klienta ze seznamu.")
-        return
-    selected_ico = ico_map[selected_label]
+            default_idx = 0
+            if ico:
+                matching = [i for i, opt in enumerate(ico_options) if ico in opt]
+                if matching:
+                    default_idx = matching[0]
+
+            selected_label = st.selectbox(
+                "Vyberte firmu (★ = klient portfolia)",
+                options=ico_options,
+                index=default_idx,
+                key="memo_ico_select",
+            )
+            if selected_label is None:
+                st.info("👆 Vyberte firmu ze seznamu.")
+                return
+            selected_ico = ico_map[selected_label]
+    else:
+        # Bez hledání — zobrazíme jen klienty portfolia
+        if not portfolio:
+            st.error("Portfolio je prázdné — zadejte IČO nebo název firmy do vyhledávání výše.")
+            return
+
+        st.caption(f"Zobrazuji {len(portfolio)} klientů portfolia. Pro vyhledání ostatních firem zadejte název nebo IČO.")
+
+        ico_options = [f"★ {c['ico']} — {c['company_name']}" for c in portfolio]
+        ico_map = {f"★ {c['ico']} — {c['company_name']}": c["ico"] for c in portfolio}
+
+        default_idx = 0
+        if ico:
+            matching = [i for i, opt in enumerate(ico_options) if ico in opt]
+            if matching:
+                default_idx = matching[0]
+
+        selected_label = st.selectbox(
+            "Vyberte klienta portfolia (nebo hledejte výše)",
+            options=ico_options,
+            index=default_idx,
+            key="memo_ico_select",
+        )
+        if selected_label is None:
+            st.info("👆 Vyberte klienta ze seznamu.")
+            return
+        selected_ico = ico_map[selected_label]
 
     # ── Tlačítko spuštění + přepínač AI ───────────────────────────────────────
     col_btn, col_mode = st.columns([2, 3])
@@ -151,7 +214,7 @@ def _render_pipeline_result(result: dict, ico: str) -> None:
     """Renderuje výsledek pipeline: status, WCR, memo, checker, human action."""
 
     status = str(result.get("status", ""))
-    company = result.get("company_name", result.get("case_view", {}).get("company_name", ico))
+    company = result.get("company_name") or (result.get("case_view") or {}).get("company_name") or ico
 
     status_colors = {
         "awaiting_human": "#8B5CF6",
@@ -207,7 +270,7 @@ def _render_human_decision_panel(result: dict, ico: str) -> None:
 
     wcr_passed = result.get("wcr_passed", True)
     checker_verdict = result.get("checker_verdict", "N/A")
-    breaches = result.get("wcr_report", {}).get("breaches", [])
+    breaches = (result.get("wcr_report") or {}).get("breaches", [])
 
     col1, col2, col3 = st.columns(3)
     col1.metric("WCR Status", "✅ PASS" if wcr_passed else f"❌ {len(breaches)} breach")

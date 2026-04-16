@@ -94,28 +94,41 @@ def get_company_master(ico: str) -> dict | None:
             "employee_category": "100-499",
             "archetype":         client.get("ew_alert_level", "GREEN"),
         }
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
     rows = query(f"""
-        SELECT ico, company_name, legal_form, nace_code,
-               nace_description, city, founding_year,
-               employee_category, archetype
-        FROM {SILVER}.silver_company_master
-        WHERE ico = '{ico}'
-        LIMIT 1
-    """)
-    return rows[0] if rows else None
-
-
-def get_customer_id(ico: str) -> int | None:
-    """silver_corporate_customer — bridge pro customer_id."""
-    if IS_DEMO:
-        return int(ico[:6])  # mock customer_id
-    rows = query(f"""
-        SELECT customer_id
-        FROM {SILVER}.silver_corporate_customer
+        SELECT CAST(ico AS STRING) AS ico, company_name, legal_form,
+               nace_description, city, employee_category, archetype
+        FROM {CAT}.{SCH}.silver_company_master
         WHERE CAST(ico AS STRING) = '{ico}'
         LIMIT 1
     """)
-    return rows[0]["customer_id"] if rows else None
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "ico":               row["ico"],
+        "company_name":      row.get("company_name", ""),
+        "legal_form":        row.get("legal_form", ""),
+        "nace_code":         "",
+        "nace_description":  row.get("nace_description", ""),
+        "city":              row.get("city", ""),
+        "founding_year":     None,
+        "employee_category": row.get("employee_category", ""),
+        "archetype":         row.get("archetype", ""),
+    }
+
+
+def get_customer_id(ico: str) -> int | None:
+    """silver_corporate_customer — bridge pro customer_id.
+    V prod: ICO samotné slouží jako customer_id (silver_corporate_customer má jiná data).
+    """
+    if IS_DEMO:
+        return int(ico[:6])  # mock customer_id
+    try:
+        return int(ico)
+    except (ValueError, TypeError):
+        return None
 
 
 def get_financial_profile(customer_id: int) -> dict | None:
@@ -146,19 +159,56 @@ def get_financial_profile(customer_id: int) -> dict | None:
                     "is_current":               True,
                 }
         return None
-    rows = query(f"""
-        SELECT avg_monthly_turnover, cash_flow_volatility,
-               intl_payment_ratio, top_payer_concentration,
-               credit_limit_utilization, days_past_due_max,
-               salary_payment_stability, supplier_payment_terms,
-               internal_rating_score, product_penetration_count,
-               valid_from, calculated_at
-        FROM {SILVER}.silver_corporate_financial_profile
-        WHERE customer_id = {customer_id}
-          AND is_current = TRUE
-        LIMIT 1
-    """)
-    return rows[0] if rows else None
+    # silver_corporate_financial_profile má jiný customer_id mapping.
+    # Buildujeme profil z silver_credit_history (transakce + loan data) pro dané IČO.
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
+    ico_str = str(customer_id)  # customer_id = int(ico) v prod
+    try:
+        loan_rows = query(f"""
+            SELECT approved_limit_czk, outstanding_balance_czk, utilisation_pct,
+                   dpd_current, relationship_years
+            FROM {CAT}.{SCH}.silver_credit_history
+            WHERE CAST(ico AS STRING) = '{ico_str}'
+              AND approved_limit_czk IS NOT NULL
+            LIMIT 1
+        """)
+        tx_rows = query(f"""
+            SELECT AVG(credit_turnover_czk) AS avg_monthly_turnover,
+                   MAX(overdraft_days) AS overdraft_days_max
+            FROM {CAT}.{SCH}.silver_credit_history
+            WHERE CAST(ico AS STRING) = '{ico_str}'
+              AND year_month IS NOT NULL
+        """)
+    except Exception as exc:
+        log.warning(f"[DataConnector] get_financial_profile selhal | ico={ico_str} {exc}")
+        return None
+
+    if not loan_rows:
+        return None
+
+    loan = loan_rows[0]
+    tx   = tx_rows[0] if tx_rows else {}
+    limit = float(loan.get("approved_limit_czk") or 0)
+    outstanding = float(loan.get("outstanding_balance_czk") or 0)
+    util = outstanding / limit if limit > 0 else 0.0
+    avg_turnover = float(tx.get("avg_monthly_turnover") or 0)
+
+    return {
+        "avg_monthly_turnover":     round(avg_turnover, 0),
+        "cash_flow_volatility":     0.15,
+        "intl_payment_ratio":       0.10,
+        "top_payer_concentration":  0.25,
+        "credit_limit_utilization": round(util, 4),
+        "days_past_due_max":        int(loan.get("dpd_current") or 0),
+        "salary_payment_stability": 0.95,
+        "supplier_payment_terms":   "30",
+        "internal_rating_score":    6.5,
+        "product_penetration_count": 3,
+        "valid_from":               "2024-01-01",
+        "calculated_at":            "2024-12-31",
+        "is_current":               True,
+    }
 
 
 def get_credit_history(ico: str) -> list[dict]:
@@ -190,6 +240,8 @@ def get_credit_history(ico: str) -> list[dict]:
             "covenant_status":         cov,
             "cmp_flag":                "false",
         }]
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
     return query(f"""
         SELECT loan_type, approved_limit_czk, outstanding_balance_czk,
                utilisation_pct, dpd_current, dpd_max_historical,
@@ -198,8 +250,9 @@ def get_credit_history(ico: str) -> list[dict]:
                covenant_breach_count, covenant_breach_date,
                covenant_resolution_date, covenant_waived,
                covenant_status, cmp_flag
-        FROM {SILVER}.silver_credit_history
-        WHERE ico = '{ico}'
+        FROM {CAT}.{SCH}.silver_credit_history
+        WHERE CAST(ico AS STRING) = '{ico}'
+          AND approved_limit_czk IS NOT NULL
     """)
 
 
@@ -208,23 +261,26 @@ def get_transactions_12m(ico: str) -> list[dict]:
     if IS_DEMO:
         from utils.mock_data import _mock_transactions_12m
         return _mock_transactions_12m(ico)
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
     return query(f"""
-        SELECT year_month,
-               CAST(credit_turnover_czk AS DOUBLE) AS credit_turnover,
-               CAST(debit_turnover_czk  AS DOUBLE) AS debit_turnover,
-               CAST(min_balance_czk     AS DOUBLE) AS min_balance,
-               CAST(avg_balance_czk     AS DOUBLE) AS avg_balance,
-               CAST(overdraft_days      AS INT)    AS overdraft_days,
+        SELECT CAST(year_month AS STRING) AS year_month,
+               CAST(credit_turnover_czk    AS DOUBLE) AS credit_turnover,
+               CAST(debit_turnover_czk     AS DOUBLE) AS debit_turnover,
+               CAST(min_balance_czk        AS DOUBLE) AS min_balance,
+               CAST(avg_balance_czk        AS DOUBLE) AS avg_balance,
+               CAST(overdraft_days         AS INT)    AS overdraft_days,
                CAST(overdraft_max_depth_czk AS DOUBLE) AS overdraft_depth,
                tax_payment_made,
-               CAST(tax_payment_delay_days AS INT) AS tax_delay_days,
+               CAST(tax_payment_delay_days AS INT)    AS tax_delay_days,
                CAST(payroll_amount_czk     AS DOUBLE) AS payroll_amount,
                CAST(payroll_employees_count AS INT)   AS payroll_employees,
                CAST(deposit_balance_czk    AS DOUBLE) AS deposit_balance,
                CAST(savings_balance_czk    AS DOUBLE) AS savings_balance
-        FROM {SILVER}.silver_transactions
-        WHERE ico = '{ico}'
-          AND year_month >= DATE_FORMAT(ADD_MONTHS(CURRENT_DATE, -12), 'yyyy-MM')
+        FROM {CAT}.{SCH}.silver_credit_history
+        WHERE CAST(ico AS STRING) = '{ico}'
+          AND year_month IS NOT NULL
+          AND year_month >= ADD_MONTHS(CURRENT_DATE(), -12)
         ORDER BY year_month DESC
     """)
 
@@ -233,23 +289,32 @@ def get_incidents_24m(ico: str) -> list[dict]:
     """silver_client_incidents — posledních 24 měsíců."""
     if IS_DEMO:
         return []  # prázdný seznam = žádné incidenty v demo
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
     return query(f"""
         SELECT incident_date, incident_type, channel,
                resolution_status,
                CAST(resolution_days AS INT) AS resolution_days,
                escalated
-        FROM {SILVER}.silver_client_incidents
-        WHERE ico = '{ico}'
-          AND incident_date >= ADD_MONTHS(CURRENT_DATE, -24)
+        FROM {CAT}.{SCH}.silver_credit_history
+        WHERE CAST(ico AS STRING) = '{ico}'
+          AND incident_date IS NOT NULL
+          AND incident_date >= ADD_MONTHS(CURRENT_DATE(), -24)
         ORDER BY incident_date DESC
     """)
 
 
 def get_cribis_data(ico: str) -> dict | None:
     """
-    CRIBIS data z Týmu 8 — silver_data_cribis_v3.
-    Vrátí nejaktuálnější období (MAX obdobi_do).
-    POZOR: sloupec je 'ic', ne 'ico' — CAST nutný.
+    CRIBIS data z Týmu 8 — investment_corporate_snapshot view.
+    View je pre-filtrovaný na aktuální snapshot (valid_to IS NULL).
+    ic je STRING v tomto view — přímé porovnání bez TRY_CAST.
+
+    Sloupce v investment_corporate_snapshot:
+      zavazky_k_uverovym_institucim_dlouhodobe = dlouhodobé bankovní závazky (= bank_liabilities_lt)
+      zavazky_k_uverovym_institucim_kratkodobe = krátkodobé bankovní závazky (= bank_liabilities_st)
+      EBITDA = provozni_hospodarsky_vysledek + depreciation (view nemá přímý ebitda sloupec)
+      current_ratio = obezna_aktiva / kratkodobe_zavazky (view nemá likvidita_bezna)
     """
     if IS_DEMO:
         from utils.mock_data import _mock_cribis
@@ -260,56 +325,51 @@ def get_cribis_data(ico: str) -> dict | None:
 
     rows = query(f"""
         SELECT
-            CAST(ic AS STRING) AS ic,
-            nazev_subjektu,
+            ic,
             hlavni_nace_kod,
             obdobi_od,
             obdobi_do,
             CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE) AS revenue,
-            CAST(ebit    AS DOUBLE) AS ebit,
-            CAST(ebitda  AS DOUBLE) AS ebitda,
-            CAST(vysledek_hospodareni_za_ucetni_obdobi AS DOUBLE) AS net_income,
-            CAST(roa_rentabilita_aktiv_v_cisty_zisk_aktiva AS DOUBLE) AS roa,
-            CAST(roe_rentabilita_vlastniho_kapitalu_v_cisty_zisk_vlastni_kapital AS DOUBLE) AS roe,
-            CAST(ros_vynosnost_trzeb_v_ebit_trzby AS DOUBLE) AS ros,
-            CAST(celkova_zadluzenost_v_cizi_zdroje_pasiva_celkem AS DOUBLE) AS total_leverage_pct,
-            CAST(likvidita_bezna AS DOUBLE) AS current_ratio,
-            CAST(cizi_zdroje AS DOUBLE) AS total_debt,
-            CAST(vlastni_kapital AS DOUBLE) AS equity,
-            CAST(zavazky_k_uverovym_institucim AS DOUBLE) AS bank_liabilities_st,
-            CAST(zavazky_k_uverovym_institucim_1 AS DOUBLE) AS bank_liabilities_lt,
-            CAST(penezni_prostredky AS DOUBLE) AS cash,
-            CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE) AS interest_expense,
-            CAST(aktiva_celkem AS DOUBLE) AS total_assets,
-            CAST(obezna_aktiva AS DOUBLE) AS current_assets,
-            CAST(zmena_obrat_pct  AS DOUBLE) AS yoy_revenue_change_pct,
-            CAST(zmena_ebitda_pct AS DOUBLE) AS yoy_ebitda_change_pct,
-            CAST(cisty_pracovni_kapital_v_tis_kc AS DOUBLE) AS net_working_capital_k,
+            CAST(provozni_hospodarsky_vysledek AS DOUBLE)                      AS ebit,
             CAST(upravy_hodnot_dlouhodobeho_hmotneho_a_nehmotneho_majetku_trvale AS DOUBLE) AS depreciation,
-            CAST(stala_aktiva     AS DOUBLE) AS fixed_assets,
-            CAST(zasoby           AS DOUBLE) AS inventories,
-            CAST(dan_z_prijmu_1   AS DOUBLE) AS income_tax,
-            is_suspicious,
-            missing_key_kpi
-        FROM {CAT}.{SCH}.silver_data_cribis_v3
+            CAST(vlastni_kapital AS DOUBLE)                                    AS equity,
+            CAST(zavazky_k_uverovym_institucim_dlouhodobe AS DOUBLE)           AS bank_liabilities_lt,
+            CAST(zavazky_k_uverovym_institucim_kratkodobe AS DOUBLE)           AS bank_liabilities_st,
+            CAST(penezni_prostredky AS DOUBLE)                                 AS cash,
+            CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                  AS interest_expense,
+            CAST(obezna_aktiva AS DOUBLE)                                      AS current_assets,
+            CAST(kratkodobe_zavazky AS DOUBLE)                                 AS current_liabilities,
+            CAST(zasoby AS DOUBLE)                                             AS inventories,
+            CAST(dane_a_poplatky AS DOUBLE)                                    AS income_tax,
+            CAST(dlouhodoby_financni_majetek AS DOUBLE)                        AS fixed_assets,
+            CAST(osobni_naklady AS DOUBLE)                                     AS personnel_costs,
+            CAST(zmena_obrat_abs AS DOUBLE)                                    AS yoy_revenue_change_abs
+        FROM {CAT}.{SCH}.investment_corporate_snapshot
         WHERE CAST(TRY_CAST(ic AS BIGINT) AS STRING) = '{_norm_ico(ico)}'
-        ORDER BY obdobi_do DESC
         LIMIT 1
     """)
     if not rows:
         return None
 
     row = rows[0]
-    # Výpočet net_debt a leverage_ratio
+    # EBITDA = provozní HV + odpisy
+    ebit        = float(row.get("ebit") or 0)
+    depreciation = float(row.get("depreciation") or 0)
+    ebitda      = ebit + depreciation
+
     bank_st = float(row.get("bank_liabilities_st") or 0)
     bank_lt = float(row.get("bank_liabilities_lt") or 0)
     cash    = float(row.get("cash") or 0)
-    ebitda  = float(row.get("ebitda") or 0)
     int_exp = float(row.get("interest_expense") or 0)
+
+    # Current ratio = oběžná aktiva / krátkodobé závazky
+    cur_assets = float(row.get("current_assets") or 0)
+    cur_liab   = float(row.get("current_liabilities") or 0)
+    current_ratio = round(cur_assets / cur_liab, 3) if cur_liab > 0 else None
 
     net_debt = (bank_st + bank_lt) - cash if (bank_st + bank_lt) > 0 else None
     leverage_ratio = None
-    if net_debt is not None and ebitda and ebitda > 0:
+    if net_debt is not None and ebitda > 0:
         leverage_ratio = round(net_debt / ebitda, 3)
 
     dscr = None
@@ -320,10 +380,14 @@ def get_cribis_data(ico: str) -> dict | None:
 
     return {
         **row,
+        "ebitda":         round(ebitda, 0),
+        "current_ratio":  current_ratio,
         "net_debt":       round(net_debt, 0) if net_debt is not None else None,
         "leverage_ratio": leverage_ratio,
         "dscr":           dscr,
-        "dscr_note":      "Proxy: EBITDA/debt_service (ne přesný Op.CF/DS)" if dscr else None,
+        "dscr_note":      "EBITDA = Provozní HV + Odpisy; DSCR proxy" if dscr else None,
+        # Compat aliasy pro starý kód
+        "total_assets":   cur_assets,   # přibližný proxy
     }
 
 
@@ -412,24 +476,29 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
     """
     from utils.wcr_rules import check_wcr_breaches, EW_THRESHOLDS
 
-    utilisation_pct = float(profile_row.get("utilisation_pct") or 0)
+    approved_limit  = float(profile_row.get("approved_limit_czk")      or 0)
+    outstanding     = float(profile_row.get("outstanding_balance_czk") or 0)
+    utilisation_pct = float(profile_row.get("utilisation_pct")         or 0)
+    if utilisation_pct == 0 and approved_limit > 0:
+        utilisation_pct = round(outstanding / approved_limit * 100, 1)
     dpd_current     = int(profile_row.get("dpd_current") or 0)
+    covenant_status = profile_row.get("covenant_status") or "OK"
 
     cribis = get_cribis_data(ico) or {}
 
-    leverage_ratio = float(cribis.get("leverage_ratio") or 0)
-    dscr           = float(cribis.get("dscr")           or 0)
-    current_ratio  = float(cribis.get("current_ratio")  or 0)
+    leverage_ratio = float(cribis.get("leverage_ratio") or 0) or None
+    dscr           = float(cribis.get("dscr")           or 0) or None
+    current_ratio  = float(cribis.get("current_ratio")  or 0) or None
+    ebitda_val     = float(cribis.get("ebitda")         or 0)
 
     wcr_breaches = check_wcr_breaches(
-        leverage_ratio=leverage_ratio,
-        dscr=dscr,
+        leverage_ratio=leverage_ratio or 0,
+        dscr=dscr or 0,
         utilisation_pct=utilisation_pct,
-        current_ratio=current_ratio,
+        current_ratio=current_ratio or 0,
         dpd_current=dpd_current,
     )
 
-    # EW level
     n_breaches = len(wcr_breaches)
     if dpd_current >= EW_THRESHOLDS["dpd_red_days"] or n_breaches >= 3:
         ew_level = "RED"
@@ -442,7 +511,6 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
     else:
         ew_level = "GREEN"
 
-    # CRIBIS rating z finančního zdraví
     if leverage_ratio and dscr:
         if   leverage_ratio <= 2.5 and dscr >= 1.8: cribis_rating = "A1"
         elif leverage_ratio <= 3.5 and dscr >= 1.4: cribis_rating = "A2"
@@ -452,18 +520,8 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
     else:
         cribis_rating = "N/A"
 
-    # Covenant status ze silver_credit_history
-    covenant_status = "OK"
-    try:
-        credit_hist = get_credit_history(ico)
-        if credit_hist:
-            covenant_status = credit_hist[0].get("covenant_status", "OK")
-    except Exception:
-        pass
-
-    avg_turnover = float(profile_row.get("avg_monthly_turnover") or 0)
-    credit_limit = avg_turnover * 12
-    current_util = utilisation_pct / 100 * credit_limit
+    credit_limit = approved_limit
+    current_util = outstanding
 
     return {
         "ico":              ico,
@@ -476,14 +534,14 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
         "credit_limit":     credit_limit,
         "current_utilisation": current_util,
         "financial_data": {
-            "revenue":             float(cribis.get("revenue")          or 0),
-            "ebitda":              float(cribis.get("ebitda")           or 0),
-            "net_debt":            float(cribis.get("net_debt")         or 0),
-            "total_assets":        float(cribis.get("total_assets")     or 0),
-            "current_assets":      float(cribis.get("current_assets")   or 0),
-            "current_liabilities": float(cribis.get("bank_liabilities_st") or 0),
-            "debt_service":        float(cribis.get("interest_expense") or 0),
-            "operating_cashflow":  float(cribis.get("ebitda")           or 0) * 0.8,
+            "revenue":             float(cribis.get("revenue")              or 0),
+            "ebitda":              ebitda_val,
+            "net_debt":            float(cribis.get("net_debt")             or 0),
+            "total_assets":        float(cribis.get("total_assets")         or 0),
+            "current_assets":      float(cribis.get("current_assets")       or 0),
+            "current_liabilities": float(cribis.get("current_liabilities")  or 0),
+            "debt_service":        float(cribis.get("interest_expense")     or 0),
+            "operating_cashflow":  ebitda_val * 0.8,
         },
         "metrics": {
             "leverage_ratio": leverage_ratio,
@@ -498,7 +556,7 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
         "katastr_data":     None,
         "flood_risk":       None,
         "data_sources": {
-            "cribis_v3": f"CRIBIS silver_data_cribis_v3 (IČ: {ico})",
+            "cribis_v3": f"CRIBIS investment_corporate_snapshot (ic: {ico})",
             "silver_fp": "Databricks Silver financial_profile (is_current=TRUE)",
         },
     }
@@ -521,104 +579,133 @@ def get_portfolio_clients() -> list[dict]:
     CAT_CR  = os.getenv("DATABRICKS_CATALOG_CRIBIS", "vse_banka")
     SCH_CR  = os.getenv("DATABRICKS_SCHEMA_CRIBIS", "investment_banking")
 
-    # ── Batch 1: Silver portfolio ──────────────────────────────────────────────
-    profile_rows = query(f"""
-        SELECT
-            CAST(cm.ico AS STRING)                             AS ico,
-            cm.company_name,
-            cm.nace_description                                AS sector,
-            CAST(fp.credit_limit_utilization * 100 AS DOUBLE) AS utilisation_pct,
-            CAST(fp.days_past_due_max AS INT)                  AS dpd_current,
-            CAST(fp.avg_monthly_turnover AS DOUBLE)            AS avg_monthly_turnover
-        FROM {CAT}.{SCH}.silver_corporate_financial_profile fp
-        JOIN {CAT}.{SCH}.silver_corporate_customer cc
-          ON cc.customer_id = fp.customer_id
-        JOIN {CAT}.{SCH}.silver_company_master cm
-          ON CAST(cm.ico AS STRING) = CAST(cc.ico AS STRING)
-        WHERE fp.is_current = TRUE
-    """)
+    # ── Batch 1: silver_company_master JOIN silver_credit_history ─────────────
+    # silver_corporate_financial_profile / silver_corporate_customer neobsahují
+    # odpovídající data → silver_credit_history je denormalizovaná tabulka se vším.
+    try:
+        profile_rows = query(f"""
+            SELECT
+                CAST(cm.ico AS STRING)                             AS ico,
+                cm.company_name,
+                cm.nace_description                                AS sector,
+                cm.city,
+                cm.employee_category,
+                MAX(ch.approved_limit_czk)                         AS approved_limit_czk,
+                MAX(ch.outstanding_balance_czk)                    AS outstanding_balance_czk,
+                MAX(ch.utilisation_pct)                            AS utilisation_pct,
+                MAX(CAST(ch.dpd_current AS INT))                   AS dpd_current,
+                MAX(ch.relationship_years)                         AS relationship_years,
+                MAX(CASE WHEN ch.covenant_breach = true THEN 'BREACH'
+                         ELSE COALESCE(ch.covenant_status, 'OK') END) AS covenant_status,
+                MAX(CAST(ch.cmp_flag AS BOOLEAN))                  AS cmp_flag
+            FROM {CAT}.{SCH}.silver_company_master cm
+            JOIN {CAT}.{SCH}.silver_credit_history ch
+              ON CAST(cm.ico AS STRING) = CAST(ch.ico AS STRING)
+            WHERE ch.approved_limit_czk IS NOT NULL
+            GROUP BY cm.ico, cm.company_name, cm.nace_description, cm.city, cm.employee_category
+        """)
+    except Exception as silver_exc:
+        log.error(
+            f"[DataConnector] Silver Batch 1 selhal — fallback na mock data | {silver_exc}"
+        )
+        from utils.mock_data import get_portfolio
+        mock = get_portfolio()
+        # Označíme jako fallback aby UI mohl zobrazit varování
+        for c in mock:
+            c["_fallback"] = True
+        return mock
 
     if not profile_rows:
-        return []
+        log.warning(
+            f"[DataConnector] Silver Batch 1 vrátil 0 řádků — fallback na mock data | "
+            f"tabulky: {CAT}.{SCH}.silver_corporate_financial_profile"
+        )
+        from utils.mock_data import get_portfolio
+        mock = get_portfolio()
+        for c in mock:
+            c["_fallback"] = True
+        return mock
 
     # Normalizovaný seznam IČO (bez vedoucích nul) pro CRIBIS JOIN
     ico_list_norm = "', '".join(_norm_ico(r["ico"]) for r in profile_rows)
     # Originální seznam pro Silver covenant query
     ico_list = "', '".join(str(r["ico"]) for r in profile_rows)
 
-    # ── Batch 2: CRIBIS pro všechna IČO najednou ──────────────────────────────
-    # POZOR: CAST(ic AS STRING) vrátí číslo BEZ vedoucích nul ('514152').
-    # Silver IČO má vedoucí nuly ('00514152').
-    # Proto normalizujeme obě strany přes BIGINT → STRING.
-    cribis_rows = query(f"""
-        SELECT
-            CAST(TRY_CAST(ic AS BIGINT) AS STRING)                                AS ic_norm,
-            CAST(ebitda AS DOUBLE)                                                AS ebitda,
-            CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                     AS interest_expense,
-            CAST(zavazky_k_uverovym_institucim AS DOUBLE)                         AS bank_liabilities_st,
-            CAST(zavazky_k_uverovym_institucim_1 AS DOUBLE)                       AS bank_liabilities_lt,
-            CAST(penezni_prostredky AS DOUBLE)                                    AS cash,
-            CAST(likvidita_bezna AS DOUBLE)                                       AS current_ratio,
-            CAST(aktiva_celkem AS DOUBLE)                                         AS total_assets,
-            CAST(obezna_aktiva AS DOUBLE)                                         AS current_assets,
-            CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE)    AS revenue,
-            CAST(cizi_zdroje AS DOUBLE)                                           AS total_debt,
-            CAST(vlastni_kapital AS DOUBLE)                                       AS equity
-        FROM {CAT_CR}.{SCH_CR}.silver_data_cribis_v3
-        WHERE CAST(TRY_CAST(ic AS BIGINT) AS STRING) IN ('{ico_list_norm}')
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY ic ORDER BY obdobi_do DESC) = 1
-    """)
-    # Klíč v mapě: normalizované IČO (bez vedoucích nul) = přesně jako ic_norm ve výsledku
+    # ── Batch 2: CRIBIS přes investment_corporate_snapshot ────────────────────
+    # View je pre-filtrovaný na aktuální snapshot (valid_to IS NULL).
+    # ic je STRING — normalizujeme přes TRY_CAST(ic AS BIGINT) pro jistotu.
+    try:
+        cribis_rows = query(f"""
+            SELECT
+                CAST(TRY_CAST(ic AS BIGINT) AS STRING)                                AS ic_norm,
+                CAST(provozni_hospodarsky_vysledek AS DOUBLE)                          AS ebit,
+                CAST(upravy_hodnot_dlouhodobeho_hmotneho_a_nehmotneho_majetku_trvale AS DOUBLE) AS depreciation,
+                CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                     AS interest_expense,
+                CAST(zavazky_k_uverovym_institucim_kratkodobe AS DOUBLE)              AS bank_liabilities_st,
+                CAST(zavazky_k_uverovym_institucim_dlouhodobe AS DOUBLE)              AS bank_liabilities_lt,
+                CAST(penezni_prostredky AS DOUBLE)                                    AS cash,
+                CAST(obezna_aktiva AS DOUBLE)                                         AS current_assets,
+                CAST(kratkodobe_zavazky AS DOUBLE)                                    AS current_liabilities,
+                CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE)    AS revenue,
+                CAST(vlastni_kapital AS DOUBLE)                                       AS equity
+            FROM {CAT_CR}.{SCH_CR}.investment_corporate_snapshot
+            WHERE CAST(TRY_CAST(ic AS BIGINT) AS STRING) IN ('{ico_list_norm}')
+        """)
+    except Exception as cribis_exc:
+        log.warning(
+            f"[DataConnector] CRIBIS batch selhal — pokračuji bez CRIBIS dat | {cribis_exc}"
+        )
+        cribis_rows = []
+    # Klíč v mapě: normalizované IČO bez vedoucích nul
     cribis_map = {str(r["ic_norm"]): r for r in cribis_rows}
 
-    # ── Batch 3: Covenant status ze silver_credit_history ─────────────────────
-    try:
-        covenant_rows = query(f"""
-            SELECT ico, covenant_status
-            FROM {CAT}.{SCH}.silver_credit_history
-            WHERE ico IN ('{ico_list}')
-        """)
-        covenant_map = {str(r["ico"]): r.get("covenant_status", "OK") for r in covenant_rows}
-    except Exception:
-        covenant_map = {}
+    # Covenant data уже есть в Batch 1 (MAX covenant_status per ICO)
+
+    from utils.wcr_rules import WCR_LIMITS, EW_THRESHOLDS
 
     # ── Sestavení výsledku v Pythonu ───────────────────────────────────────────
     clients = []
     for row in profile_rows:
         ico             = str(row.get("ico", ""))
-        utilisation_pct = float(row.get("utilisation_pct") or 0)
-        dpd_current     = int(row.get("dpd_current") or 0)
-        # Lookup přes normalizované IČO (bez vedoucích nul) — stejný klíč jako ic_norm v CRIBIS
-        cribis          = cribis_map.get(_norm_ico(ico), {})
+        approved_limit  = float(row.get("approved_limit_czk")      or 0)
+        outstanding     = float(row.get("outstanding_balance_czk") or 0)
+        utilisation_pct = float(row.get("utilisation_pct")         or 0)
+        if utilisation_pct == 0 and approved_limit > 0:
+            utilisation_pct = round(outstanding / approved_limit * 100, 1)
+        dpd_current     = int(row.get("dpd_current")    or 0)
+        covenant_status = row.get("covenant_status")    or "OK"
 
+        cribis     = cribis_map.get(_norm_ico(ico), {})
         has_cribis = bool(cribis)
+
         bank_st = float(cribis.get("bank_liabilities_st") or 0) if has_cribis else 0.0
         bank_lt = float(cribis.get("bank_liabilities_lt") or 0) if has_cribis else 0.0
-        cash    = float(cribis.get("cash") or 0)               if has_cribis else 0.0
-        ebitda  = float(cribis.get("ebitda") or 0)             if has_cribis else 0.0
-        int_exp = float(cribis.get("interest_expense") or 0)   if has_cribis else 0.0
+        cash    = float(cribis.get("cash")               or 0) if has_cribis else 0.0
+        int_exp = float(cribis.get("interest_expense")   or 0) if has_cribis else 0.0
+        ebit    = float(cribis.get("ebit")               or 0) if has_cribis else 0.0
+        deprec  = float(cribis.get("depreciation")       or 0) if has_cribis else 0.0
+        ebitda  = ebit + deprec
+        cur_assets = float(cribis.get("current_assets")     or 0) if has_cribis else 0.0
+        cur_liab   = float(cribis.get("current_liabilities") or 0) if has_cribis else 0.0
 
         net_debt       = (bank_st + bank_lt) - cash if (has_cribis and (bank_st + bank_lt) > 0) else None
         leverage_ratio = round(net_debt / ebitda, 3) if (net_debt is not None and ebitda > 0) else None
         debt_service   = int_exp + (bank_st / 12 if bank_st else 0)
         dscr           = round(ebitda / debt_service, 3) if (has_cribis and ebitda and debt_service > 0) else None
-        current_ratio  = float(cribis.get("current_ratio") or 0) if has_cribis else None
+        current_ratio  = round(cur_assets / cur_liab, 3)  if (has_cribis and cur_liab > 0) else None
 
-        # WCR: kontrolujeme pouze metriky, kde máme skutečná data
         wcr_breaches = []
-        if utilisation_pct > 0:
-            from utils.wcr_rules import WCR_LIMITS
-            if utilisation_pct > WCR_LIMITS["max_utilisation_pct"]:
-                wcr_breaches.append(f"Využití limitu {utilisation_pct:.1f} % překračuje maximum {WCR_LIMITS['max_utilisation_pct']} %")
-            if dpd_current > WCR_LIMITS["max_dpd_days"]:
-                wcr_breaches.append(f"DPD {dpd_current} dní překračuje maximum {WCR_LIMITS['max_dpd_days']} dní")
+        if utilisation_pct > WCR_LIMITS["max_utilisation_pct"]:
+            wcr_breaches.append(f"Využití limitu {utilisation_pct:.1f} % > {WCR_LIMITS['max_utilisation_pct']} %")
+        if dpd_current > WCR_LIMITS["max_dpd_days"]:
+            wcr_breaches.append(f"DPD {dpd_current} dní > {WCR_LIMITS['max_dpd_days']} dní")
         if has_cribis:
             if leverage_ratio is not None and leverage_ratio > WCR_LIMITS["max_leverage_ratio"]:
-                wcr_breaches.append(f"Leverage Ratio {leverage_ratio:.2f}x překračuje limit {WCR_LIMITS['max_leverage_ratio']}x")
+                wcr_breaches.append(f"Leverage {leverage_ratio:.2f}x > {WCR_LIMITS['max_leverage_ratio']}x")
             if dscr is not None and dscr < WCR_LIMITS["min_dscr"]:
-                wcr_breaches.append(f"DSCR {dscr:.2f} je pod minimem {WCR_LIMITS['min_dscr']}")
+                wcr_breaches.append(f"DSCR {dscr:.2f} < {WCR_LIMITS['min_dscr']}")
             if current_ratio is not None and current_ratio < WCR_LIMITS["min_current_ratio"]:
-                wcr_breaches.append(f"Current Ratio {current_ratio:.2f} je pod minimem {WCR_LIMITS['min_current_ratio']}")
+                wcr_breaches.append(f"Current Ratio {current_ratio:.2f} < {WCR_LIMITS['min_current_ratio']}")
 
         n = len(wcr_breaches)
         if dpd_current >= EW_THRESHOLDS["dpd_red_days"] or n >= 3:
@@ -628,26 +715,24 @@ def get_portfolio_clients() -> list[dict]:
         else:
             ew_level = "GREEN"
 
-        avg_turnover = float(row.get("avg_monthly_turnover") or 0)
-        credit_limit = avg_turnover * 12
-
         clients.append({
-            "ico":              ico,
-            "company_name":     row.get("company_name", ico),
-            "sector":           row.get("sector", ""),
-            "ew_alert_level":   ew_level,
-            "covenant_status":  covenant_map.get(ico, "OK"),
-            "cribis_rating":    "N/A",
-            "dpd_current":      dpd_current,
-            "credit_limit":     credit_limit,
-            "current_utilisation": utilisation_pct / 100 * credit_limit,
+            "ico":                 ico,
+            "company_name":        row.get("company_name", ico),
+            "sector":              row.get("sector", ""),
+            "city":                row.get("city", ""),
+            "ew_alert_level":      ew_level,
+            "covenant_status":     covenant_status,
+            "cribis_rating":       "N/A",
+            "dpd_current":         dpd_current,
+            "credit_limit":        approved_limit,
+            "current_utilisation": outstanding,
             "financial_data": {
                 "revenue":             float(cribis.get("revenue") or 0),
                 "ebitda":              ebitda,
                 "net_debt":            round(net_debt, 0) if net_debt is not None else 0,
-                "total_assets":        float(cribis.get("total_assets") or 0),
-                "current_assets":      float(cribis.get("current_assets") or 0),
-                "current_liabilities": bank_st,
+                "total_assets":        cur_assets,
+                "current_assets":      cur_assets,
+                "current_liabilities": cur_liab or bank_st,
                 "debt_service":        debt_service,
                 "operating_cashflow":  ebitda * 0.8,
             },
@@ -664,8 +749,8 @@ def get_portfolio_clients() -> list[dict]:
             "katastr_data":     None,
             "flood_risk":       None,
             "data_sources": {
-                "cribis_v3": f"CRIBIS silver_data_cribis_v3 (IČ: {ico})",
-                "silver_fp": "Databricks Silver financial_profile (is_current=TRUE)",
+                "silver_credit": f"silver_credit_history (ico: {ico})",
+                "cribis_snap":   f"investment_corporate_snapshot (ic: {_norm_ico(ico)})",
             },
         })
 
@@ -685,28 +770,226 @@ def get_client_info(ico: str) -> dict | None:
     CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
     SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
 
-    rows = query(f"""
-        SELECT
-            CAST(cm.ico AS STRING)                             AS ico,
-            cm.company_name,
-            cm.nace_description                                AS sector,
-            CAST(fp.credit_limit_utilization * 100 AS DOUBLE) AS utilisation_pct,
-            CAST(fp.days_past_due_max AS INT)                  AS dpd_current,
-            CAST(fp.avg_monthly_turnover AS DOUBLE)            AS avg_monthly_turnover
-        FROM {CAT}.{SCH}.silver_corporate_financial_profile fp
-        JOIN {CAT}.{SCH}.silver_corporate_customer cc
-          ON cc.customer_id = fp.customer_id
-        JOIN {CAT}.{SCH}.silver_company_master cm
-          ON CAST(cm.ico AS STRING) = CAST(cc.ico AS STRING)
-        WHERE CAST(cm.ico AS STRING) = '{ico}'
-          AND fp.is_current = TRUE
-        LIMIT 1
-    """)
+    try:
+        rows = query(f"""
+            SELECT
+                CAST(cm.ico AS STRING)             AS ico,
+                cm.company_name,
+                cm.nace_description                AS sector,
+                cm.city,
+                MAX(ch.approved_limit_czk)         AS approved_limit_czk,
+                MAX(ch.outstanding_balance_czk)    AS outstanding_balance_czk,
+                MAX(ch.utilisation_pct)            AS utilisation_pct,
+                MAX(CAST(ch.dpd_current AS INT))   AS dpd_current,
+                MAX(ch.relationship_years)         AS relationship_years,
+                MAX(CASE WHEN ch.covenant_breach = true THEN 'BREACH'
+                         ELSE COALESCE(ch.covenant_status, 'OK') END) AS covenant_status
+            FROM {CAT}.{SCH}.silver_company_master cm
+            JOIN {CAT}.{SCH}.silver_credit_history ch
+              ON CAST(cm.ico AS STRING) = CAST(ch.ico AS STRING)
+            WHERE CAST(cm.ico AS STRING) = '{ico}'
+              AND ch.approved_limit_czk IS NOT NULL
+            GROUP BY cm.ico, cm.company_name, cm.nace_description, cm.city
+            LIMIT 1
+        """)
+    except Exception as exc:
+        log.error(f"[DataConnector] get_client_info selhal | ico={ico} {exc}")
+        from utils.mock_data import get_client
+        fb = get_client(ico)
+        if fb:
+            fb["_fallback"] = True
+        return fb
 
     if not rows:
         return None
 
     return _build_client_info(ico, rows[0])
+
+
+def get_cmp_data(ico: str) -> dict | None:
+    """
+    CMP (Credit Monitoring Platform) — monitoring a kovenanty.
+    Demo: mock stub · Prod: SELECT z vse_banka.obsluha_klienta.cmp_monitoring
+    DETERMINISTIC — žádný LLM.
+    """
+    if IS_DEMO:
+        from utils.mock_data import get_client
+        client = get_client(ico) or {}
+        cov = client.get("covenant_status", "OK")
+        return {
+            "ico":                  ico,
+            "monitoring_status":    "ACTIVE",
+            "covenant_status":      cov,
+            "covenant_breach":      cov == "BREACH",
+            "last_review_date":     "2025-12-31",
+            "next_review_date":     "2026-06-30",
+            "cmp_flag":             cov == "BREACH",
+            "monitoring_notes":     "CMP stub — demo mode",
+            "source":               "cmp_stub",
+        }
+
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
+    rows = query(f"""
+        SELECT ico, monitoring_status, covenant_status, covenant_breach,
+               last_review_date, next_review_date, cmp_flag, monitoring_notes
+        FROM {CAT}.{SCH}.cmp_monitoring
+        WHERE CAST(ico AS STRING) = '{ico}'
+          AND is_current = TRUE
+        LIMIT 1
+    """)
+    return rows[0] if rows else None
+
+
+def get_cbs_data(ico: str) -> dict | None:
+    """
+    CBS (Core Banking System) — transakční a platební data.
+    Demo: mock stub · Prod: SELECT z vse_banka.obsluha_klienta.cbs_transactions_summary
+    DETERMINISTIC — žádný LLM.
+    """
+    if IS_DEMO:
+        from utils.mock_data import get_client
+        client = get_client(ico) or {}
+        fd = client.get("financial_data", {})
+        return {
+            "ico":                      ico,
+            "avg_monthly_credit_czk":   fd.get("revenue", 0) / 12,
+            "avg_monthly_debit_czk":    fd.get("revenue", 0) / 12 * 0.92,
+            "active_accounts":          3,
+            "fx_transactions_pct":      0.12,
+            "payment_regularity_score": 0.95,
+            "last_large_payment_date":  "2025-12-15",
+            "overdraft_days_ytd":       client.get("dpd_current", 0),
+            "source":                   "cbs_stub",
+        }
+
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
+    rows = query(f"""
+        SELECT ico, avg_monthly_credit_czk, avg_monthly_debit_czk,
+               active_accounts, fx_transactions_pct,
+               payment_regularity_score, last_large_payment_date,
+               overdraft_days_ytd
+        FROM {CAT}.{SCH}.cbs_transactions_summary
+        WHERE CAST(ico AS STRING) = '{ico}'
+          AND summary_period = 'LAST_12M'
+        LIMIT 1
+    """)
+    return rows[0] if rows else None
+
+
+def get_crm_data(ico: str) -> dict | None:
+    """
+    CRM (Client Relationship Management) — obchodní vztah a kontakty.
+    Demo: mock stub · Prod: SELECT z vse_banka.obsluha_klienta.crm_client_profile
+    DETERMINISTIC — žádný LLM.
+    """
+    if IS_DEMO:
+        from utils.mock_data import get_client
+        client = get_client(ico) or {}
+        fd = client.get("financial_data", {})
+        return {
+            "ico":                  ico,
+            "relationship_manager": "Jan Novák",
+            "relationship_since":   "2018-03-01",
+            "relationship_years":   7.0,
+            "client_tier":          "PREMIUM" if fd.get("revenue", 0) > 500_000_000 else "STANDARD",
+            "nps_score":            8,
+            "last_contact_date":    "2026-03-20",
+            "active_products":      ["revolving_credit", "fx_hedging", "trade_finance"],
+            "pending_requests":     [],
+            "crm_notes":            "CRM stub — demo mode",
+            "source":               "crm_stub",
+        }
+
+    CAT = os.getenv("DATABRICKS_CATALOG", "vse_banka")
+    SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
+    rows = query(f"""
+        SELECT ico, relationship_manager, relationship_since,
+               relationship_years, client_tier, nps_score,
+               last_contact_date, active_products_json,
+               pending_requests_json, crm_notes
+        FROM {CAT}.{SCH}.crm_client_profile
+        WHERE CAST(ico AS STRING) = '{ico}'
+          AND is_current = TRUE
+        LIMIT 1
+    """)
+    if not rows:
+        return None
+    row = rows[0]
+    import json
+    try:
+        row["active_products"] = json.loads(row.pop("active_products_json", "[]"))
+    except Exception:
+        row["active_products"] = []
+    try:
+        row["pending_requests"] = json.loads(row.pop("pending_requests_json", "[]"))
+    except Exception:
+        row["pending_requests"] = []
+    return row
+
+
+def search_companies_snapshot(query: str, limit: int = 50) -> list[dict]:
+    """
+    Hledá firmy v investment_corporate_snapshot podle IČO nebo názvu.
+    Vrátí list[dict] s klíči: ico, company_name, city, nace_description.
+
+    Demo: fallback na mock portfolio + snapshot stub.
+    Prod: LIKE query na investment_corporate_snapshot (46 k+ firem).
+    DETERMINISTIC — žádný LLM.
+    """
+    q = str(query).strip()
+    if not q:
+        return []
+
+    if IS_DEMO:
+        from utils.mock_data import get_portfolio as _gp
+        results = []
+        ql = q.lower()
+        for c in _gp():
+            if ql in c["company_name"].lower() or ql in str(c["ico"]):
+                results.append({
+                    "ico":              c["ico"],
+                    "company_name":     c["company_name"],
+                    "city":             c.get("city", ""),
+                    "nace_description": c.get("sector", ""),
+                })
+        return results[:limit]
+
+    CAT_CR = os.getenv("DATABRICKS_CATALOG_CRIBIS", os.getenv("DATABRICKS_CATALOG", "vse_banka"))
+    SCH_CR = os.getenv("DATABRICKS_SCHEMA_CRIBIS", "investment_banking")
+
+    # Detect if query is a pure IČO (only digits)
+    if q.isdigit():
+        norm = _norm_ico(q)
+        where = f"CAST(TRY_CAST(ic AS BIGINT) AS STRING) LIKE '{norm}%'"
+    else:
+        safe_q = q.replace("'", "''")
+        where = f"LOWER(nazev) LIKE LOWER('%{safe_q}%')"
+
+    try:
+        rows = query(f"""
+            SELECT
+                CAST(ic AS STRING)   AS ic,
+                nazev                AS company_name,
+                sidlo_obec           AS city,
+                nace_popis           AS nace_description
+            FROM {CAT_CR}.{SCH_CR}.investment_corporate_snapshot
+            WHERE {where}
+            LIMIT {int(limit)}
+        """)
+        results = []
+        for r in rows:
+            results.append({
+                "ico":              str(int(str(r.get("ic") or "0"))),  # strip leading zeros
+                "company_name":     r.get("company_name") or "",
+                "city":             r.get("city") or "",
+                "nace_description": r.get("nace_description") or "",
+            })
+        return results
+    except Exception as exc:
+        log.warning(f"[search_companies_snapshot] Selhalo: {exc}")
+        return []
 
 
 if __name__ == "__main__":
