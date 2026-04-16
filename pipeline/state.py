@@ -1,14 +1,11 @@
 """
 AgentState + všechny datové modely — pipeline/state.py
-TypedDict definice pro celý LangGraph pipeline.
+Datové modely pro DP1 Credit Memo pipeline.
 """
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated
-
-from langgraph.graph.message import add_messages
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
@@ -116,12 +113,6 @@ def make_initial_state(ico: str, request_id: str) -> AgentState:
         audit_trail=[],
         messages=[],
     )
-
-
-# ── Type aliases ──────────────────────────────────────────────────────────────
-
-# Pro uzly které používají add_messages Annotated typ
-MessagesAnnotated = Annotated[list, add_messages]
 
 
 if __name__ == "__main__":

@@ -25,18 +25,16 @@ def load_portfolio_state(state: dict) -> dict:
         SCH = os.getenv("DATABRICKS_SCHEMA_SILVER", "obsluha_klienta")
         rows = query(f"""
             SELECT
-                cm.ico,
-                cm.company_name,
-                cm.nace_description AS sector,
-                fp.credit_limit_utilization * 100 AS utilisation_pct,
-                fp.days_past_due_max AS dpd_current,
-                fp.internal_rating_score,
-                fp.avg_monthly_turnover,
-                fp.cash_flow_volatility,
-                fp.salary_payment_stability
+                CAST(cc.ico AS STRING)                             AS ico,
+                CAST(fp.credit_limit_utilization * 100 AS DOUBLE) AS utilisation_pct,
+                CAST(fp.days_past_due_max AS INT)                  AS dpd_current,
+                CAST(fp.internal_rating_score AS DOUBLE)           AS internal_rating_score,
+                CAST(fp.avg_monthly_turnover AS DOUBLE)            AS avg_monthly_turnover,
+                CAST(fp.cash_flow_volatility AS DOUBLE)            AS cash_flow_volatility,
+                CAST(fp.salary_payment_stability AS DOUBLE)        AS salary_payment_stability
             FROM {CAT}.{SCH}.silver_corporate_financial_profile fp
-            JOIN {CAT}.{SCH}.silver_company_master cm
-              ON cm.ico = CAST(fp.customer_id AS STRING)
+            JOIN {CAT}.{SCH}.silver_corporate_customer cc
+              ON cc.customer_id = fp.customer_id
             WHERE fp.is_current = TRUE
         """)
         portfolio = rows

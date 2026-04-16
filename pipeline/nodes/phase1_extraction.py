@@ -62,6 +62,20 @@ def data_extractor_agent(state: dict) -> dict:
     prompt = skill["prompt"]
     skill_version = skill["version"]
 
+    # ── Krok 0: Bronze Layer ingest ────────────────────────────────────────────
+    # Zaznamenáme ingest event ještě před Silver fetchem (raw state = vstupní params)
+    try:
+        from bronze.ingest import log_ingest_event
+        log_ingest_event(
+            source="silver",
+            ico=ico,
+            raw_payload={"ico": ico, "pipeline_run_id": state.get("request_id", "")},
+            pipeline_run_id=state.get("request_id"),
+            schema_valid=True,
+        )
+    except Exception as _bronze_exc:
+        log.warning(f"[DataExtractorAgent] Bronze log selhal (non-fatal) | {_bronze_exc}")
+
     # ── Krok 1: Fetch ze Silver tabulek ────────────────────────────────────────
     from utils.data_connector import (
         get_company_master,

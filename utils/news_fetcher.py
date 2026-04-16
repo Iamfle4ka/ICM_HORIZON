@@ -63,6 +63,7 @@ def check_isir(ico: str) -> list[NewsSignal]:
     """
     Ověří insolvenci ve veřejném ISIR API (MSPRAVEDLNOSTI ČR).
     REST endpoint: https://isir.justice.cz/isir/ueu/vysledek_lustrace_dluznika.do
+    POZN: endpoint vrací HTTP 500 při neexistujícím IČO — to je normální chování ISIR.
 
     Demo mode: vrátí prázdný seznam (žádná insolvence v mock datech).
     """
@@ -78,7 +79,10 @@ def check_isir(ico: str) -> list[NewsSignal]:
             "https://isir.justice.cz/isir/ueu/vysledek_lustrace_dluznika.do"
             f"?ico={ico}&format=json"
         )
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; ICM-EWS/1.0)",
+        })
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
@@ -106,6 +110,12 @@ def check_isir(ico: str) -> list[NewsSignal]:
                 ))
 
         log.info(f"[NewsFetcher] ISIR: ico={ico} → {len(signals)} signálů")
+    except urllib.error.HTTPError as exc:
+        # HTTP 500 = IČO nenalezeno v ISIR (normální chování) — není insolvence
+        if exc.code == 500:
+            log.debug(f"[NewsFetcher] ISIR: ico={ico} nenalezeno (HTTP 500) → žádná insolvence")
+        else:
+            log.warning(f"[NewsFetcher] ISIR selhalo HTTP {exc.code} | ico={ico}")
     except Exception as exc:
         log.warning(f"[NewsFetcher] ISIR selhalo: {exc} | ico={ico}")
 
@@ -140,29 +150,33 @@ def check_cnb_rates() -> list[NewsSignal]:
         return signals
 
     try:
-        # Pokus o načtení z ČNB ARAD — repo sazba (CZEONIA nebo 2T repo)
-        url = "https://www.cnb.cz/cnb/STAT.ARADY_PKG.VYSTUP?p_period=1&p_sort=2&p_des=50&p_format=4&p_lang=CS&p_idf=REPO_2T&p_ekviv=0"
-        req = urllib.request.Request(url, headers={"Accept": "text/plain"})
+        # ČNB API — CZEONIA denní sazba (api.cnb.cz/cnbapi/czeonia/daily)
+        # Náhrada za starý ARAD endpoint (HTTP 404 od 2025)
+        url = "https://api.cnb.cz/cnbapi/czeonia/daily?language=CS"
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "ICM-EWS/1.0",
+        })
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
-            text = resp.read().decode("windows-1250", errors="replace")
+            data = json.loads(resp.read().decode("utf-8"))
 
-        # Parsování poslední hodnoty (formát: datum|hodnota)
-        lines = [l.strip() for l in text.splitlines() if "|" in l and l.strip()]
-        if lines:
-            last = lines[-1].split("|")
-            repo_rate = float(last[-1].replace(",", "."))
-            log.info(f"[NewsFetcher] ČNB repo sazba: {repo_rate}%")
-            if repo_rate > 5.0:
-                signals.append(NewsSignal(
-                    signal_type=SignalType.CNB_RATE,
-                    level=SignalLevel.AMBER,
-                    title=f"ČNB: Repo sazba {repo_rate}%",
-                    description=(
-                        f"Repo sazba {repo_rate}% překračuje 5% práh. "
-                        "Zvýšené úrokové náklady pro klienty s floating rate úvěry."
-                    ),
-                    source="cnb.cz",
-                ))
+        # {"czeoniaDaily": {"validFor": "2026-04-15", "rate": 3.09, ...}}
+        rate_obj  = data.get("czeoniaDaily", {})
+        repo_rate = float(rate_obj.get("rate", 0))
+        valid_for = rate_obj.get("validFor", "")
+        log.info(f"[NewsFetcher] ČNB CZEONIA sazba: {repo_rate}% (k {valid_for})")
+
+        if repo_rate > 5.0:
+            signals.append(NewsSignal(
+                signal_type=SignalType.CNB_RATE,
+                level=SignalLevel.AMBER,
+                title=f"ČNB: CZEONIA sazba {repo_rate}% (k {valid_for})",
+                description=(
+                    f"Overnight sazba {repo_rate}% překračuje 5% práh. "
+                    "Zvýšené úrokové náklady pro klienty s floating rate úvěry."
+                ),
+                source="api.cnb.cz",
+            ))
     except Exception as exc:
         log.warning(f"[NewsFetcher] ČNB sazba selhala: {exc}")
 
@@ -203,7 +217,10 @@ def scrape_news(ico: str, company_name: str, max_results: int = 5) -> list[NewsS
     try:
         query = urllib.parse.quote(company_name)
         rss_url = f"https://news.google.com/rss/search?q={query}&hl=cs&gl=CZ&ceid=CZ:cs"
-        req = urllib.request.Request(rss_url, headers={"User-Agent": "ICM-EWS/1.0"})
+        req = urllib.request.Request(rss_url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        })
 
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
             content = resp.read().decode("utf-8", errors="replace")
@@ -213,10 +230,13 @@ def scrape_news(ico: str, company_name: str, max_results: int = 5) -> list[NewsS
         items = re.findall(r"<item>(.*?)</item>", content, re.DOTALL)[:max_results]
 
         for item in items:
+            # Google News vrací buď CDATA nebo plain text v <title>
             title_m = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>", item)
+            if not title_m:
+                title_m = re.search(r"<title>(.*?)</title>", item, re.DOTALL)
             link_m  = re.search(r"<link>(.*?)</link>", item)
-            title = title_m.group(1) if title_m else ""
-            link  = link_m.group(1) if link_m else None
+            title = title_m.group(1).strip() if title_m else ""
+            link  = link_m.group(1).strip() if link_m else None
 
             if not title:
                 continue

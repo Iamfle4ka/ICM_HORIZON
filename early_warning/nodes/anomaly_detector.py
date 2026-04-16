@@ -21,8 +21,9 @@ def detect_anomalies(state: dict) -> dict:
         ico = client.get("ico", "")
         metrics = state["metrics_computed"].get(ico, {})
         client_alerts = _apply_rules(client, metrics)
-        # News signály (ISIR, ČNB, Google News)
-        client_alerts.extend(_apply_news_signals(client))
+        # News signály — pouze pokud jsou potvrzeny číselnými daty (confirmation gate)
+        # ISIR/exekuce vždy projdou; Google News/ČNB pouze pokud klient má číselný signál
+        client_alerts.extend(_apply_news_signals_confirmed(client, metrics, client_alerts))
         # AI text pouze pro RED a AMBER, pouze pokud API key dostupný
         if client_alerts and os.getenv("ANTHROPIC_API_KEY"):
             client_alerts = _add_ai_recommendations(client, metrics, client_alerts)
@@ -51,18 +52,80 @@ def detect_anomalies(state: dict) -> dict:
     return {**state, "alerts": alerts, "audit_trail": audit}
 
 
-def _apply_news_signals(client: dict) -> list[dict]:
-    """Převede NewsSignal objekty na EWS alert dict formát."""
+def _has_numeric_stress(metrics: dict, client_alerts: list[dict]) -> bool:
+    """
+    DETERMINISTIC — vrátí True pokud klient má alespoň jeden číselný stresový signál.
+    Slouží jako confirmation gate pro news signály.
+
+    Podmínky (OR):
+      - Utilisation >= 75 % (AMBER práh)
+      - DPD >= 15 dní (AMBER práh)
+      - MoM pokles obratu >= 10 %
+      - Overdraft frequency >= 20 %
+      - Tax compliance < 67 %
+      - Covenant status WARNING nebo BREACH
+      - Už existuje číselný alert z _apply_rules()
+    """
+    util  = metrics.get("utilisation_pct", 0.0)
+    dpd   = metrics.get("dpd_current", 0.0)
+    mom   = metrics.get("mom_turnover_change", 0.0)
+    odft  = metrics.get("overdraft_frequency", 0.0)
+    tax   = metrics.get("tax_compliance", 100.0)
+    cvnt  = metrics.get("covenant_status", "OK")
+
+    if util  >= EW_THRESHOLDS["utilisation_amber_pct"]: return True
+    if dpd   >= EW_THRESHOLDS["dpd_amber_days"]:        return True
+    if mom   <= -EW_THRESHOLDS["revenue_drop_amber_pct"]: return True
+    if odft  >= EW_THRESHOLDS["overdraft_amber_pct"]:   return True
+    if tax   <  EW_THRESHOLDS["tax_compliance_amber"]:  return True
+    if cvnt  in ("WARNING", "BREACH"):                  return True
+    if client_alerts:                                   return True  # již existuje číselný alert
+    return False
+
+
+def _apply_news_signals_confirmed(
+    client: dict,
+    metrics: dict,
+    client_alerts: list[dict],
+) -> list[dict]:
+    """
+    Převede NewsSignal objekty na EWS alert dict formát.
+
+    Confirmation gate (Jakubovo pravidlo):
+      - ISIR insolvence / exekuce → vždy projdou (tvrdá právní fakta)
+      - ČNB repo sazba            → vždy projde (makro signál pro celé portfolio)
+      - Google News negativní     → pouze pokud _has_numeric_stress() == True
+                                    (jinak jen sentiment noise → false positive)
+    """
     alerts: list[dict] = []
     try:
-        from utils.news_fetcher import get_all_ews_signals, SignalLevel
+        from utils.news_fetcher import get_all_ews_signals, SignalLevel, SignalType
         ico          = client.get("ico", "")
         company_name = client.get("company_name", "")
         signals = get_all_ews_signals(ico, company_name)
         now = datetime.now(timezone.utc).isoformat()
+
+        # Confirmation gate — počítáme jednou pro celého klienta
+        has_stress = _has_numeric_stress(metrics, client_alerts)
+
         for s in signals:
             if s.level == SignalLevel.INFO:
-                continue  # INFO signály neinzerujeme jako alerty
+                continue  # INFO nikdy nezobrazujeme jako alert
+
+            # Tvrdá právní fakta — vždy projdou bez confirmation gate
+            hard_fact = s.signal_type in (SignalType.INSOLVENCY, SignalType.EXECUTION)
+
+            # Makro signál (ČNB) — vždy projde, týká se celého portfolia
+            macro = s.signal_type == SignalType.CNB_RATE
+
+            # Google News / sentiment — pouze s číselným potvrzením
+            if not hard_fact and not macro and not has_stress:
+                log.debug(
+                    f"[AnomalyDetector] News signal potlačen (bez číselného potvrzení) | "
+                    f"ico={ico} signal={s.signal_type.value}"
+                )
+                continue  # ← toto eliminuje false positives ze sentimentu
+
             alerts.append({
                 "ico":                ico,
                 "company_name":       company_name,
@@ -77,6 +140,7 @@ def _apply_news_signals(client: dict) -> list[dict]:
                 "detected_at":        now,
                 "source":             s.source,
                 "title":              s.title,
+                "confirmed_by_data":  has_stress or hard_fact or macro,  # auditní pole
             })
     except Exception as exc:
         log.warning(f"[AnomalyDetector] News signály selhaly: {exc}")

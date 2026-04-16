@@ -30,11 +30,34 @@ def calculate_portfolio_metrics(state: dict) -> dict:
     return {**state, "metrics_computed": results, "audit_trail": audit}
 
 
+def _get_transactions(ico: str) -> list[dict]:
+    """Načte poslední 12 měsíců transakcí z Silver nebo mock dat."""
+    is_demo = __import__("os").getenv("ICM_ENV", "demo").lower() != "production"
+    if is_demo:
+        from utils.mock_data import _mock_transactions_12m
+        return _mock_transactions_12m(ico)
+    try:
+        from utils.data_connector import query
+        rows = query(f"""
+            SELECT
+                year_month,
+                CAST(credit_turnover_czk AS DOUBLE)  AS credit_turnover,
+                CAST(overdraft_days AS INT)           AS overdraft_days,
+                tax_payment_made
+            FROM vse_banka.obsluha_klienta.silver_transactions
+            WHERE CAST(ico AS STRING) = '{ico}'
+            ORDER BY year_month DESC
+            LIMIT 12
+        """)
+        return rows
+    except Exception as exc:
+        log.warning(f"[MetricsCalculator] silver_transactions selhal pro {ico}: {exc}")
+        return []
+
+
 def _compute_client_metrics(ico: str, client: dict) -> dict:
     """DETERMINISTIC výpočet trendů pro jednoho klienta."""
-    from utils.mock_data import _mock_transactions_12m
-
-    txns = _mock_transactions_12m(ico)
+    txns = _get_transactions(ico)
     credits = [float(t.get("credit_turnover", 0) or 0) for t in txns]
 
     # MoM turnover change
@@ -47,7 +70,7 @@ def _compute_client_metrics(ico: str, client: dict) -> dict:
     overdraft_freq = overdraft_days_3m / 90 * 100  # DETERMINISTIC
 
     # Tax compliance (poslední 3M)
-    tax_ok = sum(1 for t in txns[:3] if t.get("tax_payment_made") == "true")
+    tax_ok = sum(1 for t in txns[:3] if str(t.get("tax_payment_made", "")).lower() in ("true", "1"))
     tax_compliance = (tax_ok / 3 * 100) if txns else 100.0  # DETERMINISTIC
 
     # Utilisation a trend
