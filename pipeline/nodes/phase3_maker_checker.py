@@ -438,20 +438,28 @@ def policy_rules_engine(state: dict) -> dict:
     passed_rules = sum(1 for r in rules_detail.values() if r.get("passed") is True)
     failed_rules = sum(1 for r in rules_detail.values() if r.get("passed") is False)
 
+    # Breaches počítáme z rules_detail — ne ze staré phase2 hodnoty
+    # (phase2 wcr_breaches mohl chybět nebo být prázdný v smoke testech)
+    breaches_computed = [
+        r["description"]
+        for r in rules_detail.values()
+        if r.get("passed") is False
+    ]
+
     wcr_report = {
         "rules":            list(rules_detail.values()),
         "rules_detail":     rules_detail,
         "total_rules":      5,
         "passed_rules":     passed_rules,
         "failed_rules":     failed_rules,
-        "breaches":         breaches,
+        "breaches":         breaches_computed,
         "skipped_rules":    wcr_skipped,
-        "overall_passed":   len(breaches) == 0,
+        "overall_passed":   len(breaches_computed) == 0,
         "wcr_partial":      wcr_partial,
         "data_completeness": completeness,
         "checked_at":       datetime.now(timezone.utc).isoformat(),
     }
-    wcr_passed = not breaches
+    wcr_passed = len(breaches_computed) == 0
     log.info(
         f"[PolicyRulesEngine] WCR check hotov | ico={ico} "
         f"passed={wcr_passed} breaches={len(breaches)}"
@@ -461,11 +469,11 @@ def policy_rules_engine(state: dict) -> dict:
         state,
         node="PolicyRulesEngine",
         action="wcr_check",
-        result="passed" if wcr_passed else f"{len(breaches)}_breaches",
+        result="passed" if wcr_passed else f"{len(breaches_computed)}_breaches",
         metadata={
             "ico":         ico,
             "wcr_passed":  wcr_passed,
-            "breaches":    breaches,
+            "breaches":    breaches_computed,
             "rules_passed": wcr_report["passed_rules"],
             "rules_failed": wcr_report["failed_rules"],
         },

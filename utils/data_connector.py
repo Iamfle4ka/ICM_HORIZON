@@ -562,6 +562,141 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
     }
 
 
+def _get_portfolio_from_cribis(cat_cr: str, sch_cr: str, limit: int = 50) -> list[dict]:
+    """
+    Fallback: sestav portfolio přímo z CRIBIS dat (bez Silver tabulek).
+    Vrátí max `limit` klientů s kompletními finančními daty.
+    DETERMINISTIC — žádný LLM.
+    """
+    from utils.wcr_rules import WCR_LIMITS, EW_THRESHOLDS
+
+    log.info(f"[DataConnector] Sestavuji portfolio přímo z CRIBIS | limit={limit}")
+    try:
+        rows = query(f"""
+            SELECT
+                CAST(TRY_CAST(ic AS BIGINT) AS STRING)                                    AS ico,
+                nazev_subjektu                                                             AS company_name,
+                hlavni_nace_kod                                                            AS sector,
+                CAST(provozni_hospodarsky_vysledek AS DOUBLE)                              AS ebit,
+                CAST(upravy_hodnot_dlouhodobeho_hmotneho_a_nehmotneho_majetku_trvale
+                     AS DOUBLE)                                                            AS depreciation,
+                CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                         AS interest_expense,
+                CAST(zavazky_k_uverovym_institucim_kratkodobe AS DOUBLE)                  AS bank_liabilities_st,
+                CAST(zavazky_k_uverovym_institucim_dlouhodobe AS DOUBLE)                  AS bank_liabilities_lt,
+                CAST(penezni_prostredky AS DOUBLE)                                        AS cash,
+                CAST(obezna_aktiva AS DOUBLE)                                             AS current_assets,
+                CAST(kratkodobe_zavazky AS DOUBLE)                                        AS current_liabilities,
+                CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE)        AS revenue,
+                CAST(vlastni_kapital AS DOUBLE)                                           AS equity,
+                CAST(aktiva_celkem AS DOUBLE)                                             AS total_assets
+            FROM {cat_cr}.{sch_cr}.silver_data_cribis_v3
+            WHERE ebitda IS NOT NULL
+              AND cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii IS NOT NULL
+              AND cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii > 0
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY ic ORDER BY obdobi_do DESC) = 1
+            LIMIT {limit}
+        """)
+    except Exception as exc:
+        log.error(f"[DataConnector] CRIBIS portfolio selhal — fallback na mock | {exc}")
+        from utils.mock_data import get_portfolio
+        mock = get_portfolio()
+        for c in mock:
+            c["_fallback"] = True
+        return mock
+
+    if not rows:
+        from utils.mock_data import get_portfolio
+        mock = get_portfolio()
+        for c in mock:
+            c["_fallback"] = True
+        return mock
+
+    clients = []
+    for row in rows:
+        ico    = str(row.get("ico", ""))
+        ebit   = float(row.get("ebit")        or 0)
+        deprec = float(row.get("depreciation") or 0)
+        ebitda = ebit + deprec
+
+        bank_st    = float(row.get("bank_liabilities_st") or 0)
+        bank_lt    = float(row.get("bank_liabilities_lt") or 0)
+        cash       = float(row.get("cash")               or 0)
+        int_exp    = float(row.get("interest_expense")   or 0)
+        cur_assets = float(row.get("current_assets")     or 0)
+        cur_liab   = float(row.get("current_liabilities") or 0)
+        revenue    = float(row.get("revenue")            or 0)
+        total_assets = float(row.get("total_assets")     or 0)
+
+        net_debt       = (bank_st + bank_lt) - cash if (bank_st + bank_lt) > 0 else None
+        leverage_ratio = round(net_debt / ebitda, 3) if (net_debt is not None and ebitda > 0) else None
+        debt_service   = int_exp + (bank_st / 12 if bank_st else 0)
+        dscr           = round(ebitda / debt_service, 3) if (ebitda and debt_service > 0) else None
+        current_ratio  = round(cur_assets / cur_liab, 3) if cur_liab > 0 else None
+
+        # Odhad využití (CRIBIS nemá credit_limit → používáme bank_liabilities jako proxy)
+        credit_limit    = bank_st + bank_lt if (bank_st + bank_lt) > 0 else revenue * 0.3
+        utilisation_pct = round(bank_st / credit_limit * 100, 1) if credit_limit > 0 else 0.0
+        dpd_current     = 0
+
+        wcr_breaches = []
+        if utilisation_pct > WCR_LIMITS["max_utilisation_pct"]:
+            wcr_breaches.append(f"Využití {utilisation_pct:.1f}% > {WCR_LIMITS['max_utilisation_pct']}%")
+        if leverage_ratio is not None and leverage_ratio > WCR_LIMITS["max_leverage_ratio"]:
+            wcr_breaches.append(f"Leverage {leverage_ratio:.2f}x > {WCR_LIMITS['max_leverage_ratio']}x")
+        if dscr is not None and dscr < WCR_LIMITS["min_dscr"]:
+            wcr_breaches.append(f"DSCR {dscr:.2f} < {WCR_LIMITS['min_dscr']}")
+        if current_ratio is not None and current_ratio < WCR_LIMITS["min_current_ratio"]:
+            wcr_breaches.append(f"Current Ratio {current_ratio:.2f} < {WCR_LIMITS['min_current_ratio']}")
+
+        n = len(wcr_breaches)
+        if n >= 3:
+            ew_level = "RED"
+        elif utilisation_pct >= EW_THRESHOLDS["utilisation_amber_pct"] or n >= 1:
+            ew_level = "AMBER"
+        else:
+            ew_level = "GREEN"
+
+        clients.append({
+            "ico":                 ico,
+            "company_name":        row.get("company_name") or ico,
+            "sector":              row.get("sector") or "",
+            "city":                "",
+            "ew_alert_level":      ew_level,
+            "covenant_status":     "OK",
+            "cribis_rating":       "N/A",
+            "dpd_current":         dpd_current,
+            "credit_limit":        credit_limit,
+            "current_utilisation": bank_st,
+            "financial_data": {
+                "revenue":             revenue,
+                "ebitda":              ebitda,
+                "net_debt":            round(net_debt, 0) if net_debt is not None else 0,
+                "total_assets":        total_assets,
+                "current_assets":      cur_assets,
+                "current_liabilities": cur_liab,
+                "debt_service":        debt_service,
+                "operating_cashflow":  ebitda * 0.8,
+            },
+            "metrics": {
+                "leverage_ratio":  leverage_ratio,
+                "dscr":            dscr,
+                "current_ratio":   current_ratio,
+                "utilisation_pct": utilisation_pct,
+            },
+            "wcr_breaches":     wcr_breaches,
+            "portfolio_status": "ACTIVE",
+            "esg_score":        None,
+            "last_memo_date":   None,
+            "_cribis_direct":   True,
+            "data_sources": {
+                "cribis": f"silver_data_cribis_v3 (ic: {ico})",
+            },
+        })
+
+    log.info(f"[DataConnector] CRIBIS portfolio: {len(clients)} klientů")
+    return clients
+
+
 def get_portfolio_clients() -> list[dict]:
     """
     Vrátí seznam aktivních klientů pro Portfolio Dashboard.
@@ -610,21 +745,20 @@ def get_portfolio_clients() -> list[dict]:
         )
         from utils.mock_data import get_portfolio
         mock = get_portfolio()
-        # Označíme jako fallback aby UI mohl zobrazit varování
         for c in mock:
             c["_fallback"] = True
         return mock
 
     if not profile_rows:
         log.warning(
-            f"[DataConnector] Silver Batch 1 vrátil 0 řádků — fallback na mock data | "
-            f"tabulky: {CAT}.{SCH}.silver_corporate_financial_profile"
+            f"[DataConnector] Silver Batch 1 vrátil 0 řádků — fallback na mock data"
         )
         from utils.mock_data import get_portfolio
         mock = get_portfolio()
         for c in mock:
             c["_fallback"] = True
         return mock
+
 
     # Normalizovaný seznam IČO (bez vedoucích nul) pro CRIBIS JOIN
     ico_list_norm = "', '".join(_norm_ico(r["ico"]) for r in profile_rows)
