@@ -35,8 +35,9 @@ log = logging.getLogger(__name__)
 # ── Výchozí modely ────────────────────────────────────────────────────────────
 
 _DEFAULT_MODELS: dict[str, str] = {
-    "anthropic": "claude-opus-4-6",
-    "openai":    "gpt-4o",
+    "anthropic":   "claude-opus-4-6",
+    "openai":      "gpt-4o",
+    "openrouter":  "nvidia/nemotron-3-super-120b-a12b:free",
 }
 
 
@@ -89,7 +90,7 @@ class LLMClient:
         """
         if self.provider == "anthropic":
             return self._complete_anthropic(system, user_message, max_tokens)
-        if self.provider == "openai":
+        if self.provider in ("openai", "openrouter"):
             return self._complete_openai(system, user_message, max_tokens)
         raise ValueError(f"Nepodporovaný LLM provider: {self.provider!r}")
 
@@ -111,6 +112,19 @@ class LLMClient:
                     "a spusť 'pip install openai'."
                 )
             return openai.OpenAI()
+
+        if provider == "openrouter":
+            try:
+                import openai  # type: ignore
+            except ImportError:
+                raise ImportError(
+                    "openai balíček není nainstalován. "
+                    "Spusť 'pip install openai'."
+                )
+            return openai.OpenAI(
+                api_key=os.getenv("OPENROUTER_API_KEY"),
+                base_url="https://openrouter.ai/api/v1",
+            )
 
         raise ValueError(
             f"Nepodporovaný LLM_PROVIDER={provider!r}. "

@@ -4,6 +4,7 @@ Spustí pipeline a zobrazí výsledek: Credit Memo + WCR report + Checker výsle
 """
 
 import streamlit as st
+from datetime import datetime, timezone
 
 from ui.styles import (
     CITI_BLUE,
@@ -13,7 +14,7 @@ from ui.styles import (
     wcr_icon,
 )
 from utils.data_connector import get_client_info, get_portfolio_clients, search_companies_snapshot
-from utils.mock_data import get_mock_agent_result
+from utils.mock_data import get_mock_agent_result, get_applicants
 
 
 @st.cache_data(ttl=300)
@@ -58,93 +59,63 @@ def render_credit_memo_page() -> None:
             "Zkontroluj připojení v Nastavení → Databricks."
         )
 
-    # ── Vyhledávání klienta ────────────────────────────────────────────────────
-    # Podporuje všechny firmy (46 k+) z investment_corporate_snapshot,
-    # nejen klienty portfolia. Portfolio klienti jsou označeni hvězdičkou.
+    # ── Žadatelé o úvěr ───────────────────────────────────────────────────────
+    # Credit Memo slouží pro hodnocení NOVÝCH žadatelů — firem, které u nás
+    # ještě nejsou v portfoliu a žádají o úvěrový limit poprvé.
+    st.info(
+        "📋 **Credit Memo Generator** zpracovává žádosti o nový úvěrový limit. "
+        "Firmy níže jsou noví žadatelé — po schválení se dočasně zobrazí v Portfoliu."
+    )
+
+    applicants = get_applicants()
+
+    # Vyhledávací pole — hledá mezi žadateli
     search = st.text_input(
-        "🔍 Hledat firmu (název nebo IČO) — klienti portfolia i ostatní firmy",
-        placeholder="Např. Stavební nebo 27082440",
+        "🔍 Hledat žadatele (název nebo IČO)",
+        placeholder="Např. Quantum nebo 10200300",
         key="client_search",
     )
 
-    portfolio_icos = {c["ico"] for c in portfolio}
-
-    q = search.strip()
+    q = search.strip().lower()
     if q:
-        # Hledáme v portfoliu
-        ql = q.lower()
-        from_portfolio = [
-            c for c in portfolio
-            if ql in c["company_name"].lower() or ql in c["ico"]
+        filtered_apps = [
+            a for a in applicants
+            if q in a["company_name"].lower() or q in a["ico"]
         ]
-        # Hledáme ve všech firmách (snapshot)
-        snapshot_hits = _search_all_companies(q)
-        # Přidáme pouze ty, co nejsou v portfoliu
-        extra = [s for s in snapshot_hits if s["ico"] not in portfolio_icos]
-
-        display_clients = from_portfolio + extra
-
-        if not display_clients:
-            st.warning(f"Žádná firma nenalezena pro: '{q}'")
-            # Umožníme přímý vstup IČO
-            if q.isdigit() and 6 <= len(q) <= 8:
-                st.info(f"Firma s IČO `{q}` nebyla nalezena v databázi, ale můžete zkusit spustit pipeline přímo.")
-                direct_ico = q
-            else:
-                return
-            selected_ico = direct_ico
-        else:
-            def _label(c: dict) -> str:
-                star = "★ " if c["ico"] in portfolio_icos else ""
-                city = f" · {c['city']}" if c.get("city") else ""
-                return f"{star}{c['ico']} — {c['company_name']}{city}"
-
-            ico_options = [_label(c) for c in display_clients]
-            ico_map = {_label(c): c["ico"] for c in display_clients}
-
-            default_idx = 0
-            if ico:
-                matching = [i for i, opt in enumerate(ico_options) if ico in opt]
-                if matching:
-                    default_idx = matching[0]
-
-            selected_label = st.selectbox(
-                "Vyberte firmu (★ = klient portfolia)",
-                options=ico_options,
-                index=default_idx,
-                key="memo_ico_select",
-            )
-            if selected_label is None:
-                st.info("👆 Vyberte firmu ze seznamu.")
-                return
-            selected_ico = ico_map[selected_label]
+        if not filtered_apps:
+            st.warning(f"Žádný žadatel nenalezen pro: '{search}'")
+            return
+        display_clients = filtered_apps
     else:
-        # Bez hledání — zobrazíme jen klienty portfolia
-        if not portfolio:
-            st.error("Portfolio je prázdné — zadejte IČO nebo název firmy do vyhledávání výše.")
-            return
+        display_clients = applicants
 
-        st.caption(f"Zobrazuji {len(portfolio)} klientů portfolia. Pro vyhledání ostatních firem zadejte název nebo IČO.")
+    # Badge helper
+    ew_badge = {"GREEN": "🟢", "AMBER": "🟡", "RED": "🔴"}
 
-        ico_options = [f"★ {c['ico']} — {c['company_name']}" for c in portfolio]
-        ico_map = {f"★ {c['ico']} — {c['company_name']}": c["ico"] for c in portfolio}
+    def _label(a: dict) -> str:
+        badge = ew_badge.get(a.get("ew_alert_level", "GREEN"), "⚪")
+        city  = f" · {a['city']}" if a.get("city") else ""
+        return f"{badge} {a['ico']} — {a['company_name']}{city}"
 
-        default_idx = 0
-        if ico:
-            matching = [i for i, opt in enumerate(ico_options) if ico in opt]
-            if matching:
-                default_idx = matching[0]
+    ico_options = [_label(a) for a in display_clients]
+    ico_map     = {_label(a): a["ico"] for a in display_clients}
 
-        selected_label = st.selectbox(
-            "Vyberte klienta portfolia (nebo hledejte výše)",
-            options=ico_options,
-            index=default_idx,
-            key="memo_ico_select",
-        )
-        if selected_label is None:
-            st.info("👆 Vyberte klienta ze seznamu.")
-            return
-        selected_ico = ico_map[selected_label]
+    default_idx = 0
+    if ico:
+        matching = [i for i, opt in enumerate(ico_options) if ico in opt]
+        if matching:
+            default_idx = matching[0]
+
+    selected_label = st.selectbox(
+        f"Vyberte žadatele ({len(display_clients)} žádostí)",
+        options=ico_options,
+        index=default_idx,
+        key="memo_ico_select",
+    )
+    if selected_label is None:
+        st.info("👆 Vyberte žadatele ze seznamu.")
+        return
+    selected_ico = ico_map[selected_label]
 
     # ── Tlačítko spuštění + přepínač AI ───────────────────────────────────────
     col_btn, col_mode = st.columns([2, 3])
@@ -327,12 +298,33 @@ def _render_human_decision_panel(result: dict, ico: str) -> None:
 
 def _record_decision(ico: str, decision: str, comments: str) -> None:
     from pipeline.nodes.phase4_human_audit import record_human_decision
-    result_key  = f"pipeline_result_{ico}"
+    from utils.mock_data import get_applicant, get_client
+    result_key   = f"pipeline_result_{ico}"
     decision_key = f"decision_{ico}"
     result = st.session_state.get(result_key, {})
     updated = record_human_decision(result, decision, comments)
-    st.session_state[result_key] = updated
+    st.session_state[result_key]  = updated
     st.session_state[decision_key] = {"decision": decision, "comments": comments}
+
+    # ── Po schválení → dočasně přidáme žadatele do portfolia (session only) ──
+    if decision == "approve":
+        applicant = get_applicant(ico)
+        if applicant is not None:
+            # Konvertujeme žadatele na portfolio klienta
+            new_client = dict(applicant)
+            new_client["portfolio_status"]    = "ACTIVE"
+            new_client["current_utilisation"] = 0   # zatím nečerpá
+            new_client["dpd_current"]         = 0
+            new_client["covenant_status"]     = "OK"
+            new_client["last_memo_date"]      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            new_client["_newly_approved"]     = True  # marker pro UI
+            # Přidáme do session_state portfolia
+            session_portfolio = st.session_state.get("_session_portfolio_additions", [])
+            # Odstraní případný duplikát
+            session_portfolio = [c for c in session_portfolio if c["ico"] != ico]
+            session_portfolio.insert(0, new_client)
+            st.session_state["_session_portfolio_additions"] = session_portfolio
+
     # Aktualizace cases logu
     cases_log = st.session_state.get("cases_log", [])
     for case in cases_log:
@@ -527,21 +519,65 @@ def _render_metrics_tab(result: dict, ico: str) -> None:
             use_container_width=True,
         )
 
-    # ── Silver data (utilisation, DPD) ────────────────────────────────────────
-    if util is not None or dpd is not None:
-        st.markdown("#### Silver data")
-        silver_items = []
-        if util is not None:
-            silver_items.append(("Využití limitu", fmt_pct(util)))
-        if dpd is not None:
-            silver_items.append(("DPD", f"{dpd} dní"))
-        avg_turn = metrics.get("avg_monthly_turnover")
-        if avg_turn:
-            silver_items.append(("Prům. měs. obrat", fmt_czk(avg_turn)))
-        if silver_items:
+    # ── Interní data banky (jen pro stávající klienty) ─────────────────────────
+    is_client = case_view.get("is_existing_client", False) or case_view.get("portfolio_status", "") != "ŽADATEL"
+    
+    if is_client:
+        st.markdown("#### Interní data (Horizon Bank)")
+        
+        ch = case_view.get("csv_credit_history", {})
+        tx = case_view.get("csv_transactions", {})
+        
+        if not ch and not tx and case_view.get("portfolio_status", "") != "ŽADATEL":
+            # Původní fallback pro hardcodované portfolio klienty
+            interni_items = []
+            interni_items.append(("Status v portfoliu", case_view.get("portfolio_status", "")))
+            c_limit = case_view.get("credit_limit")
+            c_util = case_view.get("current_utilisation")
+            if c_limit is not None: interni_items.append(("Schválený limit", fmt_czk(c_limit)))
+            if c_util is not None: interni_items.append(("Aktuální čerpání", fmt_czk(c_util)))
+            interni_items.append(("DPD", f"{dpd} dní" if dpd else "0 dní"))
+        else:
+            # Nová detailní tabulka z reálných CSV dat
+            interni_items = []
+            interni_items.append(("Status v portfoliu", "EXISTUJÍCÍ KLIENT (historie u banky)"))
+            
+            c_limit = ch.get("total_limit", case_view.get("credit_limit"))
+            c_util = ch.get("total_outstanding", case_view.get("current_utilisation"))
+            
+            if c_limit: interni_items.append(("Schválený limit (Banka)", fmt_czk(c_limit)))
+            if c_util: interni_items.append(("Aktuální čerpání (Banka)", fmt_czk(c_util)))
+            
+            loans = ch.get("loans", [])
+            if loans:
+                interni_items.append(("Aktivní úvěrové produkty", str(len(loans))))
+            
+            curr_dpd = ch.get("current_dpd", 0)
+            max_dpd = ch.get("max_historical_dpd", 0)
+            interni_items.append(("Aktuální DPD", f"{curr_dpd} dní"))
+            if max_dpd > 0:
+                interni_items.append(("Max. historické DPD", f"🛑 {max_dpd} dní"))
+                
+            if ch.get("has_restructuring"):
+                interni_items.append(("Restrukturalizace úvěru", "⚠️ ANO"))
+            if ch.get("has_breach"):
+                interni_items.append(("Porušení Covenantů (Breach)", "⚠️ AKTIVNÍ"))
+                
+            avg_cred = tx.get("avg_credit_turnover")
+            avg_deb = tx.get("avg_debit_turnover")
+            if avg_cred:
+                interni_items.append(("Prům. měsíční kreditní obrat", fmt_czk(avg_cred)))
+            if avg_deb:
+                interni_items.append(("Prům. měsíční debetní obrat", fmt_czk(avg_deb)))
+                
+            od = tx.get("overdraft_occurrences", 0)
+            if od > 0:
+                interni_items.append(("Nepovolené debety na účtech", f"⚠️ {od} výskytů"))
+            
+        if interni_items:
             st.dataframe(
-                {"Ukazatel": [k for k, _ in silver_items],
-                 "Hodnota":  [v for _, v in silver_items]},
+                {"Ukazatel": [k for k, _ in interni_items],
+                 "Hodnota":  [v for _, v in interni_items]},
                 use_container_width=True,
             )
 

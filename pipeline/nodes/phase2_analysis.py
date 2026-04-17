@@ -67,6 +67,16 @@ def context_builder(state: dict) -> dict:
             case_view.setdefault("data_sources", {})["cribis"] = (
                 "CRIBIS Tým 8 — silver_data_cribis_v3"
             )
+            case_view["cribis_company_info"] = {
+                "nazev_subjektu":              cribis.get("nazev_subjektu"),
+                "hlavni_nace_popis":           cribis.get("hlavni_nace_popis"),
+                "hlavni_nace_kod":             cribis.get("hlavni_nace_kod"),
+                "pravni_forma":                cribis.get("pravni_forma"),
+                "kategorie_poctu_zamestnancu": cribis.get("kategorie_poctu_zamestnancu"),
+                "kategorie_obratu":            cribis.get("kategorie_obratu"),
+                "mesto":                       cribis.get("mesto"),
+                "obdobi_do":                   cribis.get("obdobi_do"),
+            }
             # Předchozí období pro CAPEX výpočet
             try:
                 cribis_prev = get_cribis_prev_period(ico)

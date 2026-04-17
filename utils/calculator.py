@@ -131,7 +131,8 @@ def calc_leverage(
     if eb is None or eb <= 0.0:
         return None
     net_debt = (st + lt) - c
-    return round(net_debt / eb, 3)
+    raw_lev = net_debt / eb
+    return round(raw_lev, 3) if abs(raw_lev) <= 100 else None
 
 
 def calc_icr(

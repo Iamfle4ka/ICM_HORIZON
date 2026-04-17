@@ -277,7 +277,7 @@ def get_transactions_12m(ico: str) -> list[dict]:
                CAST(payroll_employees_count AS INT)   AS payroll_employees,
                CAST(deposit_balance_czk    AS DOUBLE) AS deposit_balance,
                CAST(savings_balance_czk    AS DOUBLE) AS savings_balance
-        FROM {CAT}.{SCH}.silver_credit_history
+        FROM {CAT}.{SCH}.silver_transactions
         WHERE CAST(ico AS STRING) = '{ico}'
           AND year_month IS NOT NULL
           AND year_month >= ADD_MONTHS(CURRENT_DATE(), -12)
@@ -296,7 +296,7 @@ def get_incidents_24m(ico: str) -> list[dict]:
                resolution_status,
                CAST(resolution_days AS INT) AS resolution_days,
                escalated
-        FROM {CAT}.{SCH}.silver_credit_history
+        FROM {CAT}.{SCH}.silver_client_incidents
         WHERE CAST(ico AS STRING) = '{ico}'
           AND incident_date IS NOT NULL
           AND incident_date >= ADD_MONTHS(CURRENT_DATE(), -24)
@@ -306,15 +306,9 @@ def get_incidents_24m(ico: str) -> list[dict]:
 
 def get_cribis_data(ico: str) -> dict | None:
     """
-    CRIBIS data z Týmu 8 — investment_corporate_snapshot view.
-    View je pre-filtrovaný na aktuální snapshot (valid_to IS NULL).
-    ic je STRING v tomto view — přímé porovnání bez TRY_CAST.
-
-    Sloupce v investment_corporate_snapshot:
-      zavazky_k_uverovym_institucim_dlouhodobe = dlouhodobé bankovní závazky (= bank_liabilities_lt)
-      zavazky_k_uverovym_institucim_kratkodobe = krátkodobé bankovní závazky (= bank_liabilities_st)
-      EBITDA = provozni_hospodarsky_vysledek + depreciation (view nemá přímý ebitda sloupec)
-      current_ratio = obezna_aktiva / kratkodobe_zavazky (view nemá likvidita_bezna)
+    CRIBIS data z Týmu 8 — silver_data_cribis_v3.
+    Nejnovější snapshot (ORDER BY obdobi_do DESC LIMIT 1).
+    ic je NUMERIC — normalizujeme přes TRY_CAST pro JOIN.
     """
     if IS_DEMO:
         from utils.mock_data import _mock_cribis
@@ -325,52 +319,86 @@ def get_cribis_data(ico: str) -> dict | None:
 
     rows = query(f"""
         SELECT
-            ic,
-            hlavni_nace_kod,
-            obdobi_od,
-            obdobi_do,
-            CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE) AS revenue,
-            CAST(provozni_hospodarsky_vysledek AS DOUBLE)                      AS ebit,
+            CAST(TRY_CAST(ic AS BIGINT) AS STRING)                                   AS ic,
+            nazev_subjektu, hlavni_nace_kod, hlavni_nace_popis,
+            mesto, pravni_forma, datum_zalozeni, zakladni_kapital_z_or,
+            kategorie_poctu_zamestnancu, kategorie_obratu,
+            obdobi_od, obdobi_do,
+            CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE)        AS revenue,
+            CAST(ebit       AS DOUBLE)                                                AS ebit,
+            CAST(ebitda     AS DOUBLE)                                                AS ebitda,
+            CAST(vysledek_hospodareni_za_ucetni_obdobi AS DOUBLE)                    AS net_income,
+            CAST(roa_rentabilita_aktiv_v_cisty_zisk_aktiva AS DOUBLE)                AS roa,
+            CAST(roe_rentabilita_vlastniho_kapitalu_v_cisty_zisk_vlastni_kapital AS DOUBLE) AS roe,
+            CAST(ros_vynosnost_trzeb_v_ebit_trzby AS DOUBLE)                         AS ros,
+            CAST(celkova_zadluzenost_v_cizi_zdroje_pasiva_celkem AS DOUBLE)          AS total_debt_ratio,
+            CAST(likvidita_bezna AS DOUBLE)                                           AS quick_ratio,
+            CAST(likvidita_celkova_kratkodoba_aktiva_kratkodobe_zavazky AS DOUBLE)   AS current_ratio_direct,
+            CAST(cisty_pracovni_kapital_v_tis_kc AS DOUBLE)                          AS net_working_capital,
+            CAST(doba_obratu_kratkodobych_pohledavek_ve_dnech_pohledavky_kratkodobe_trzby_celkem_365 AS DOUBLE) AS days_receivables,
+            CAST(doba_obratu_kratkodobych_zavazku_ve_dnech_zavazky_kratkodobe_naklady_365 AS DOUBLE)            AS days_payables,
+            CAST(obratka_aktiv_trzby_celkova_aktiva AS DOUBLE)                       AS asset_turnover,
+            CAST(cizi_zdroje   AS DOUBLE)                                             AS cizi_zdroje,
+            CAST(vlastni_kapital AS DOUBLE)                                           AS equity,
+            CAST(zavazky_k_uverovym_institucim   AS DOUBLE)                          AS bank_liabilities_lt,
+            CAST(zavazky_k_uverovym_institucim_1 AS DOUBLE)                          AS bank_liabilities_st,
+            CAST(penezni_prostredky AS DOUBLE)                                        AS cash,
+            CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                        AS interest_expense,
+            CAST(aktiva_celkem  AS DOUBLE)                                            AS total_assets,
+            CAST(obezna_aktiva  AS DOUBLE)                                            AS current_assets,
+            CAST(zasoby         AS DOUBLE)                                            AS inventories,
+            CAST(stala_aktiva   AS DOUBLE)                                            AS fixed_assets,
             CAST(upravy_hodnot_dlouhodobeho_hmotneho_a_nehmotneho_majetku_trvale AS DOUBLE) AS depreciation,
-            CAST(vlastni_kapital AS DOUBLE)                                    AS equity,
-            CAST(zavazky_k_uverovym_institucim_dlouhodobe AS DOUBLE)           AS bank_liabilities_lt,
-            CAST(zavazky_k_uverovym_institucim_kratkodobe AS DOUBLE)           AS bank_liabilities_st,
-            CAST(penezni_prostredky AS DOUBLE)                                 AS cash,
-            CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                  AS interest_expense,
-            CAST(obezna_aktiva AS DOUBLE)                                      AS current_assets,
-            CAST(kratkodobe_zavazky AS DOUBLE)                                 AS current_liabilities,
-            CAST(zasoby AS DOUBLE)                                             AS inventories,
-            CAST(dane_a_poplatky AS DOUBLE)                                    AS income_tax,
-            CAST(dlouhodoby_financni_majetek AS DOUBLE)                        AS fixed_assets,
-            CAST(osobni_naklady AS DOUBLE)                                     AS personnel_costs,
-            CAST(zmena_obrat_abs AS DOUBLE)                                    AS yoy_revenue_change_abs
-        FROM {CAT}.{SCH}.investment_corporate_snapshot
+            CAST(dan_z_prijmu_1 AS DOUBLE)                                            AS income_tax
+        FROM {CAT}.{SCH}.silver_data_cribis_v3
         WHERE CAST(TRY_CAST(ic AS BIGINT) AS STRING) = '{_norm_ico(ico)}'
+        ORDER BY obdobi_do DESC
         LIMIT 1
     """)
     if not rows:
         return None
 
     row = rows[0]
-    # EBITDA = provozní HV + odpisy
-    ebit        = float(row.get("ebit") or 0)
-    depreciation = float(row.get("depreciation") or 0)
-    ebitda      = ebit + depreciation
 
+    # CRIBIS ukládá hodnoty v tisících CZK → převést na CZK (*1000).
+    # Koeficienty (roa, roe, current_ratio_direct ...) a textová pole se nepřevádí.
+    _CRIBIS_MONETARY = {
+        "ebitda", "ebit", "depreciation",
+        "bank_liabilities_st", "bank_liabilities_lt",
+        "cash", "interest_expense",
+        "revenue", "total_assets", "equity",
+        "current_assets", "inventories", "fixed_assets",
+        "net_working_capital", "cizi_zdroje", "net_income",
+        "income_tax",
+    }
+    row = {
+        k: (float(v) * 1000 if k in _CRIBIS_MONETARY and v is not None else v)
+        for k, v in row.items()
+    }
+
+    _EBITDA_MIN = 50_000  # 50 000 CZK — práh po převodu na CZK
+    ebitda_raw = row.get("ebitda")
+    ebit_raw   = float(row.get("ebit") or 0)
+    depr_raw   = float(row.get("depreciation") or 0)
+    ebitda_col = float(ebitda_raw) if ebitda_raw is not None else None
+    if ebitda_col is None or abs(ebitda_col) < _EBITDA_MIN:
+        ebitda_col = ebit_raw + depr_raw
+
+    ebitda  = ebitda_col
     bank_st = float(row.get("bank_liabilities_st") or 0)
     bank_lt = float(row.get("bank_liabilities_lt") or 0)
     cash    = float(row.get("cash") or 0)
     int_exp = float(row.get("interest_expense") or 0)
 
-    # Current ratio = oběžná aktiva / krátkodobé závazky
-    cur_assets = float(row.get("current_assets") or 0)
-    cur_liab   = float(row.get("current_liabilities") or 0)
-    current_ratio = round(cur_assets / cur_liab, 3) if cur_liab > 0 else None
+    current_ratio = row.get("current_ratio_direct")
+    if current_ratio is not None:
+        current_ratio = round(float(current_ratio), 3)
 
     net_debt = (bank_st + bank_lt) - cash if (bank_st + bank_lt) > 0 else None
     leverage_ratio = None
-    if net_debt is not None and ebitda > 0:
-        leverage_ratio = round(net_debt / ebitda, 3)
+    if net_debt is not None and ebitda != 0:
+        raw_lev = net_debt / ebitda
+        leverage_ratio = round(raw_lev, 3) if abs(raw_lev) <= 100 else None
 
     dscr = None
     if ebitda and int_exp and int_exp > 0:
@@ -385,9 +413,7 @@ def get_cribis_data(ico: str) -> dict | None:
         "net_debt":       round(net_debt, 0) if net_debt is not None else None,
         "leverage_ratio": leverage_ratio,
         "dscr":           dscr,
-        "dscr_note":      "EBITDA = Provozní HV + Odpisy; DSCR proxy" if dscr else None,
-        # Compat aliasy pro starý kód
-        "total_assets":   cur_assets,   # přibližný proxy
+        "dscr_note":      "DSCR proxy (interest + ST bank debt / 12)" if dscr else None,
     }
 
 
@@ -419,7 +445,13 @@ def get_cribis_prev_period(ico: str) -> dict | None:
     """)
     if not rows:
         return None
-    return rows[0]
+
+    _PREV_MONETARY = {"stala_aktiva", "odpisy", "ebitda", "revenue"}
+    row = rows[0]
+    return {
+        k: (float(v) * 1000 if k in _PREV_MONETARY and v is not None else v)
+        for k, v in row.items()
+    }
 
 
 def get_flood_risk(city: str) -> dict:
@@ -556,7 +588,7 @@ def _build_client_info(ico: str, profile_row: dict) -> dict:
         "katastr_data":     None,
         "flood_risk":       None,
         "data_sources": {
-            "cribis_v3": f"CRIBIS investment_corporate_snapshot (ic: {ico})",
+            "cribis_v3": f"CRIBIS silver_data_cribis_v3 (ic: {ico})",
             "silver_fp": "Databricks Silver financial_profile (is_current=TRUE)",
         },
     }
@@ -631,25 +663,24 @@ def get_portfolio_clients() -> list[dict]:
     # Originální seznam pro Silver covenant query
     ico_list = "', '".join(str(r["ico"]) for r in profile_rows)
 
-    # ── Batch 2: CRIBIS přes investment_corporate_snapshot ────────────────────
-    # View je pre-filtrovaný na aktuální snapshot (valid_to IS NULL).
-    # ic je STRING — normalizujeme přes TRY_CAST(ic AS BIGINT) pro jistotu.
+    # ── Batch 2: CRIBIS přes silver_data_cribis_v3 ────────────────────────────
+    # QUALIFY ROW_NUMBER() → pouze nejnovější snapshot per IČO (PARTITION BY ic).
     try:
         cribis_rows = query(f"""
             SELECT
                 CAST(TRY_CAST(ic AS BIGINT) AS STRING)                                AS ic_norm,
-                CAST(provozni_hospodarsky_vysledek AS DOUBLE)                          AS ebit,
-                CAST(upravy_hodnot_dlouhodobeho_hmotneho_a_nehmotneho_majetku_trvale AS DOUBLE) AS depreciation,
+                CAST(ebitda AS DOUBLE)                                                 AS ebitda,
                 CAST(nakladove_uroky_a_podobne_naklady AS DOUBLE)                     AS interest_expense,
-                CAST(zavazky_k_uverovym_institucim_kratkodobe AS DOUBLE)              AS bank_liabilities_st,
-                CAST(zavazky_k_uverovym_institucim_dlouhodobe AS DOUBLE)              AS bank_liabilities_lt,
+                CAST(zavazky_k_uverovym_institucim_1 AS DOUBLE)                       AS bank_liabilities_st,
+                CAST(zavazky_k_uverovym_institucim   AS DOUBLE)                       AS bank_liabilities_lt,
                 CAST(penezni_prostredky AS DOUBLE)                                    AS cash,
                 CAST(obezna_aktiva AS DOUBLE)                                         AS current_assets,
-                CAST(kratkodobe_zavazky AS DOUBLE)                                    AS current_liabilities,
+                CAST(likvidita_celkova_kratkodoba_aktiva_kratkodobe_zavazky AS DOUBLE) AS current_ratio_direct,
                 CAST(cisty_obrat_za_ucetni_obdobi_i_ii_iii_iv_v_vi_vii AS DOUBLE)    AS revenue,
                 CAST(vlastni_kapital AS DOUBLE)                                       AS equity
-            FROM {CAT_CR}.{SCH_CR}.investment_corporate_snapshot
+            FROM {CAT_CR}.{SCH_CR}.silver_data_cribis_v3
             WHERE CAST(TRY_CAST(ic AS BIGINT) AS STRING) IN ('{ico_list_norm}')
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY ic ORDER BY obdobi_do DESC) = 1
         """)
     except Exception as cribis_exc:
         log.warning(
@@ -678,21 +709,23 @@ def get_portfolio_clients() -> list[dict]:
         cribis     = cribis_map.get(_norm_ico(ico), {})
         has_cribis = bool(cribis)
 
-        bank_st = float(cribis.get("bank_liabilities_st") or 0) if has_cribis else 0.0
-        bank_lt = float(cribis.get("bank_liabilities_lt") or 0) if has_cribis else 0.0
-        cash    = float(cribis.get("cash")               or 0) if has_cribis else 0.0
-        int_exp = float(cribis.get("interest_expense")   or 0) if has_cribis else 0.0
-        ebit    = float(cribis.get("ebit")               or 0) if has_cribis else 0.0
-        deprec  = float(cribis.get("depreciation")       or 0) if has_cribis else 0.0
-        ebitda  = ebit + deprec
-        cur_assets = float(cribis.get("current_assets")     or 0) if has_cribis else 0.0
-        cur_liab   = float(cribis.get("current_liabilities") or 0) if has_cribis else 0.0
+        # CRIBIS ukládá hodnoty v tisících CZK → převést na CZK (*1000).
+        # current_ratio_direct je koeficient — nepřevádí se.
+        _K = 1000
+        bank_st    = float(cribis.get("bank_liabilities_st") or 0) * _K if has_cribis else 0.0
+        bank_lt    = float(cribis.get("bank_liabilities_lt") or 0) * _K if has_cribis else 0.0
+        cash       = float(cribis.get("cash")               or 0) * _K if has_cribis else 0.0
+        int_exp    = float(cribis.get("interest_expense")   or 0) * _K if has_cribis else 0.0
+        ebitda     = float(cribis.get("ebitda")             or 0) * _K if has_cribis else 0.0
+        cur_assets = float(cribis.get("current_assets")     or 0) * _K if has_cribis else 0.0
+        cr_direct  = float(cribis.get("current_ratio_direct") or 0) if has_cribis else 0.0
 
-        net_debt       = (bank_st + bank_lt) - cash if (has_cribis and (bank_st + bank_lt) > 0) else None
-        leverage_ratio = round(net_debt / ebitda, 3) if (net_debt is not None and ebitda > 0) else None
-        debt_service   = int_exp + (bank_st / 12 if bank_st else 0)
-        dscr           = round(ebitda / debt_service, 3) if (has_cribis and ebitda and debt_service > 0) else None
-        current_ratio  = round(cur_assets / cur_liab, 3)  if (has_cribis and cur_liab > 0) else None
+        net_debt      = (bank_st + bank_lt) - cash if (has_cribis and (bank_st + bank_lt) > 0) else None
+        _raw_lev      = (net_debt / ebitda) if (net_debt is not None and ebitda > 0) else None
+        leverage_ratio = round(_raw_lev, 3) if (_raw_lev is not None and abs(_raw_lev) <= 100) else None
+        debt_service  = int_exp + (bank_st / 12 if bank_st else 0)
+        dscr          = round(ebitda / debt_service, 3) if (has_cribis and ebitda and debt_service > 0) else None
+        current_ratio = round(cr_direct, 3) if (has_cribis and cr_direct > 0) else None
 
         wcr_breaches = []
         if utilisation_pct > WCR_LIMITS["max_utilisation_pct"]:
@@ -732,7 +765,7 @@ def get_portfolio_clients() -> list[dict]:
                 "net_debt":            round(net_debt, 0) if net_debt is not None else 0,
                 "total_assets":        cur_assets,
                 "current_assets":      cur_assets,
-                "current_liabilities": cur_liab or bank_st,
+                "current_liabilities": bank_st,
                 "debt_service":        debt_service,
                 "operating_cashflow":  ebitda * 0.8,
             },
@@ -750,7 +783,7 @@ def get_portfolio_clients() -> list[dict]:
             "flood_risk":       None,
             "data_sources": {
                 "silver_credit": f"silver_credit_history (ico: {ico})",
-                "cribis_snap":   f"investment_corporate_snapshot (ic: {_norm_ico(ico)})",
+                "cribis_snap":   f"silver_data_cribis_v3 (ic: {_norm_ico(ico)})",
             },
         })
 
@@ -931,11 +964,11 @@ def get_crm_data(ico: str) -> dict | None:
 
 def search_companies_snapshot(query: str, limit: int = 50) -> list[dict]:
     """
-    Hledá firmy v investment_corporate_snapshot podle IČO nebo názvu.
+    Hledá firmy v silver_data_cribis_v3 podle IČO nebo názvu.
     Vrátí list[dict] s klíči: ico, company_name, city, nace_description.
 
     Demo: fallback na mock portfolio + snapshot stub.
-    Prod: LIKE query na investment_corporate_snapshot (46 k+ firem).
+    Prod: LIKE query na silver_data_cribis_v3 (nejnovější snapshot per IČO).
     DETERMINISTIC — žádný LLM.
     """
     q = str(query).strip()
@@ -965,17 +998,18 @@ def search_companies_snapshot(query: str, limit: int = 50) -> list[dict]:
         where = f"CAST(TRY_CAST(ic AS BIGINT) AS STRING) LIKE '{norm}%'"
     else:
         safe_q = q.replace("'", "''")
-        where = f"LOWER(nazev) LIKE LOWER('%{safe_q}%')"
+        where = f"LOWER(nazev_subjektu) LIKE LOWER('%{safe_q}%')"
 
     try:
         rows = query(f"""
             SELECT
-                CAST(ic AS STRING)   AS ic,
-                nazev                AS company_name,
-                sidlo_obec           AS city,
-                nace_popis           AS nace_description
-            FROM {CAT_CR}.{SCH_CR}.investment_corporate_snapshot
+                CAST(TRY_CAST(ic AS BIGINT) AS STRING) AS ic,
+                nazev_subjektu                          AS company_name,
+                mesto                                   AS city,
+                hlavni_nace_popis                       AS nace_description
+            FROM {CAT_CR}.{SCH_CR}.silver_data_cribis_v3
             WHERE {where}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY ic ORDER BY obdobi_do DESC) = 1
             LIMIT {int(limit)}
         """)
         results = []

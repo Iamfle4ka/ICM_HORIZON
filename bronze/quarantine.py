@@ -231,6 +231,43 @@ def auto_repair_and_quarantine(records: list[dict], source: str) -> dict:
     }
 
 
+# ── Inicializace demo dat ──────────────────────────────────────────────────
+is_demo = os.getenv("ICM_ENV", "demo").lower() != "production"
+if is_demo and not _QUARANTINE_STORE:
+    quarantine_record(
+        record={"company_name": "Pandora Fashion Group s.r.o.", "ico": "10201512", "ebitda": "-5000000"},
+        reason="invalid_metric_value",
+        source="cribis",
+        errors=["CRIBIS EBITDA je záporná (-5 000 000), automatika vyžaduje potvrzení Stewartem."],
+    )
+    quarantine_record(
+        record={"company_name": "Agro Future s.r.o.", "ico": "10201108", "datum_vzniku": "31-02-2015"},
+        reason="date_parsing_error",
+        source="ares",
+        errors=["Neplatný formát data vzniku: '31-02-2015' (neexistující datum)."],
+    )
+    quarantine_record(
+        record={"ico": "10200401", "company_name": "EkoStav Holding s.r.o.", "net_debt": "N/A"},
+        reason="missing_critical_financials",
+        source="cbs",
+        errors=["Chybí hodnota Net Debt v účetních výkazech, nelze spočítat Leverage Ratio."],
+        auto_fixed=["IČO normalizováno ('1020 0401' → '10200401')"],
+    )
+    quarantine_record(
+        record={"ico": "10200300", "company_name": "Quantum Dynamics", "status": "V likvidaci"},
+        reason="company_in_liquidation",
+        source="justice_cz",
+        errors=["Společnost vstoupila do likvidace dle OR Justice.cz. Rizikový status."],
+        auto_fixed=["Název normalizován: odstraněny neviditelné znaky."],
+    )
+    quarantine_record(
+        record={"ico": "10201111", "company_name": "Velkopivovar Morava a.s.", "dpd": 450},
+        reason="extreme_outlier",
+        source="ews_internal",
+        errors=["DPD = 450 dní překračuje logické prahy pro nového žadatele. Možná chyba databázového propojení."],
+    )
+
+
 if __name__ == "__main__":
     # Smoke test
     rid1 = quarantine_record(

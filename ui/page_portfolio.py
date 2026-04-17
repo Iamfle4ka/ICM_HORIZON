@@ -58,6 +58,20 @@ def render_portfolio_page() -> None:
             "Zkontroluj Databricks připojení v Nastavení → Databricks."
         )
 
+    # ── Dočasně schválené firmy (session only) ────────────────────────────────
+    # Po schválení Credit Memo žadatele se firma dočasně přidá do portfolia
+    # POUZE v rámci aktuální session — po refresh/restart se resetuje.
+    session_additions = st.session_state.get("_session_portfolio_additions", [])
+    if session_additions:
+        st.success(
+            f"✅ **{len(session_additions)} nová firma** dočasně přidána do portfolia po schválení Credit Memo. "
+            f"Po obnovení stránky zmizí (session only)."
+        )
+        # Merge: session additions nahoře + portfolio (bez duplikátů)
+        existing_icos  = {c["ico"] for c in portfolio}
+        new_additions  = [c for c in session_additions if c["ico"] not in existing_icos]
+        portfolio      = new_additions + portfolio
+
     # ── Souhrnné KPI karty ─────────────────────────────────────────────────────
     ew_counts = {"GREEN": 0, "AMBER": 0, "RED": 0}
     breach_count = 0
@@ -77,6 +91,7 @@ def render_portfolio_page() -> None:
         st.metric("🟡 Amber", ew_counts["AMBER"])
     with col4:
         st.metric("🔴 Red (WCR breach)", breach_count)
+
 
     st.markdown("---")
 

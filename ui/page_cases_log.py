@@ -38,7 +38,7 @@ def render_cases_log_page() -> None:
     wcr_fail  = sum(1 for c in cases_log if c.get("wcr_passed") is False)
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Celkem kейсů", total)
+    k1.metric("Celkem případů", total)
     k2.metric("✅ Schváleno", approved)
     k3.metric("❌ Zamítnuto", rejected)
     k4.metric("⏳ Čeká na rozhodnutí", pending)

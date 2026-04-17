@@ -67,10 +67,9 @@ def render_data_steward_page() -> None:
 
     if not records:
         st.info("Žádné záznamy v karanténě odpovídající filtru.")
-        return
-
-    st.markdown(f"**Nalezeno {len(records)} záznam(ů)**")
-    st.markdown("---")
+    else:
+        st.markdown(f"**Nalezeno {len(records)} záznam(ů)**")
+        st.markdown("---")
 
     # ── Seznam záznamů ─────────────────────────────────────────────────────────
     for rec in records:
@@ -193,32 +192,3 @@ def render_data_steward_page() -> None:
         )
         if reviewer_name:
             st.session_state["reviewer_name"] = reviewer_name
-
-    # ── Demo: přidání testovacích záznamů ─────────────────────────────────────
-    with st.expander("🧪 Demo: Přidat testovací záznamy do karantény"):
-        st.info(
-            "Přidá ukázkové záznamy do karantény pro testování Data Steward workflow."
-        )
-        if st.button("Přidat 3 demo záznamy", key="add_demo_quarantine"):
-            from bronze.quarantine import quarantine_record
-            quarantine_record(
-                record={"company_name": "Demo Firma s.r.o.", "ico": "INVALID123"},
-                reason="invalid_ico_format",
-                source="cribis",
-                errors=["Neplatný formát IČO: 'INVALID123' (požadováno 8 číslic)"],
-            )
-            quarantine_record(
-                record={"company_name": "Chybějící IČO Corp"},
-                reason="missing_ico",
-                source="silver_company",
-                errors=["Chybí IČO/ic — nelze identifikovat záznam"],
-            )
-            quarantine_record(
-                record={"ico": "27082440", "company_name": "Auto-fix OK Firma", "ebitda": "N/A"},
-                reason="invalid_ico_format",
-                source="ares",
-                errors=[],
-                auto_fixed=["IČO: '270 824 40' → '27082440' (odstraněny nečíselné znaky)"],
-            )
-            st.success("3 demo záznamy přidány. Stránka se obnoví.")
-            st.rerun()

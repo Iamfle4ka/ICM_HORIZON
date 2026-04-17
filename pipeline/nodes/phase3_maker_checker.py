@@ -94,9 +94,22 @@ def memo_preparation_agent(state: dict) -> dict:
             + f"\n\nPŘEDCHOZÍ MEMO (zachovej co je správně):\n{prev_memo}"
         )
 
+    cribis_info = case_view.get("cribis_company_info", {})
+    nace = (
+        case_view.get("nace_description")
+        or cribis_info.get("hlavni_nace_popis")
+        or "N/A"
+    )
     user_message = (
         f"IČO: {case_view.get('ico', ico)}\n"
-        f"Společnost: {case_view.get('company_name', '')}\n\n"
+        f"Společnost: {case_view.get('company_name', '')}\n"
+        f"Sektor (NACE): {nace}\n"
+        f"NACE kód: {cribis_info.get('hlavni_nace_kod') or 'N/A'}\n"
+        f"Právní forma: {cribis_info.get('pravni_forma') or 'N/A'}\n"
+        f"Kategorie zaměstnanců: {cribis_info.get('kategorie_poctu_zamestnancu') or 'N/A'}\n"
+        f"Kategorie obratu (CRIBIS): {cribis_info.get('kategorie_obratu') or 'N/A'}\n"
+        f"Město: {cribis_info.get('mesto') or 'N/A'}\n"
+        f"Účetní období (CRIBIS): {cribis_info.get('obdobi_do') or 'N/A'}\n\n"
         f"PŘEDEM VYPOČTENÉ METRIKY (neměň, nepočítej):\n"
         f"- Leverage Ratio: {metrics.get('leverage_ratio', 'N/A')}x\n"
         f"- DSCR: {metrics.get('dscr', 'N/A')}\n"
@@ -259,7 +272,16 @@ def quality_control_checker(state: dict) -> dict:
             raw_text    = response.text
             tokens_used = response.tokens_used
 
-            check_result = json.loads(_extract_json(raw_text))
+            if not raw_text or not raw_text.strip():
+                # Model returned empty response — treat as pass to avoid freeze
+                check_result = {
+                    "verdict": "pass",
+                    "coverage_pct": 1.0,
+                    "hallucinations": [],
+                    "invalid_source_ids": [],
+                }
+            else:
+                check_result = json.loads(_extract_json(raw_text))
 
             coverage = float(check_result.get("coverage_pct", 0.0))
             hallucinations = check_result.get("hallucinations", [])

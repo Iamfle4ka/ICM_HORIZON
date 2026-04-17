@@ -56,7 +56,7 @@ GLOBAL_CSS = """
     html, body, [class*="css"], .stApp, .stMarkdown, .stMetric,
     button, input, select, textarea {
         font-family: 'Manrope', sans-serif !important;
-        color: #0B0F17;
+        color: #0B0F17 !important;
     }
 
     /* ── Global background ── */
@@ -223,15 +223,36 @@ GLOBAL_CSS = """
         border-bottom-color: #4D25EB !important;
     }
 
+    /* ── Force light color scheme globally ── */
+    :root { color-scheme: light; }
+    html, body, .stApp { color-scheme: light; }
+
     /* ── Input fields ── */
-    .stTextInput input, .stSelectbox select, .stTextArea textarea {
+    .stTextInput input, .stSelectbox select, .stTextArea textarea,
+    [data-baseweb="input"] input, [data-baseweb="select"] input,
+    [data-baseweb="textarea"] textarea {
         border-radius: 6px !important;
         border: 1px solid #E5E7EB !important;
         font-family: 'Manrope', sans-serif !important;
+        background-color: #FFFFFF !important;
+        color: #0B0F17 !important;
+        color-scheme: light;
     }
     .stTextInput input:focus, .stTextArea textarea:focus {
         border-color: #4D25EB !important;
         box-shadow: 0 0 0 2px rgba(77,37,235,0.12) !important;
+    }
+
+    /* ── Selectbox / dropdown ── */
+    [data-baseweb="select"] > div, [data-baseweb="popover"] {
+        background-color: #FFFFFF !important;
+        color: #0B0F17 !important;
+    }
+
+    /* ── Checkbox ── */
+    [data-testid="stCheckbox"] label span,
+    [data-testid="stCheckbox"] span {
+        color: #0B0F17 !important;
     }
 
     /* ── Scrollable box ── */
